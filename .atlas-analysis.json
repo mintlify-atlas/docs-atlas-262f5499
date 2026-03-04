@@ -1,0 +1,180 @@
+{
+  "projectType": "data-platform",
+  "projectName": "Materialize",
+  "projectDescription": "A real-time data integration platform that creates and maintains consistent views of transactional data using SQL",
+  "theme": "aspen",
+  "primaryColor": "#2d1f5a",
+  "lightColor": "#958bab",
+  "darkColor": "#eae8ed",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "key-concepts"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/overview",
+              "concepts/sources",
+              "concepts/materialized-views",
+              "concepts/indexes",
+              "concepts/sinks",
+              "concepts/clusters"
+            ]
+          },
+          {
+            "group": "Ingesting Data",
+            "pages": [
+              "ingest/overview",
+              "ingest/postgres",
+              "ingest/mysql",
+              "ingest/kafka",
+              "ingest/webhooks"
+            ]
+          },
+          {
+            "group": "Transform Data",
+            "pages": [
+              "transform/overview",
+              "transform/sql-views",
+              "transform/materialized-views",
+              "transform/joins",
+              "transform/aggregations"
+            ]
+          },
+          {
+            "group": "Serve Results",
+            "pages": [
+              "serve/overview",
+              "serve/query-results",
+              "serve/subscribe",
+              "serve/kafka-sinks"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/clusters",
+              "operations/indexes",
+              "operations/monitoring",
+              "operations/performance"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/overview",
+              "integrations/dbt",
+              "integrations/client-libraries",
+              "integrations/bi-tools"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "SQL Reference",
+        "groups": [
+          {
+            "group": "SQL Overview",
+            "pages": [
+              "sql/overview",
+              "sql/data-types"
+            ]
+          },
+          {
+            "group": "DDL",
+            "pages": [
+              "sql/create-source",
+              "sql/create-materialized-view",
+              "sql/create-view",
+              "sql/create-index",
+              "sql/create-sink",
+              "sql/create-table",
+              "sql/create-cluster"
+            ]
+          },
+          {
+            "group": "DML",
+            "pages": [
+              "sql/select",
+              "sql/insert",
+              "sql/update",
+              "sql/delete",
+              "sql/subscribe"
+            ]
+          },
+          {
+            "group": "Functions",
+            "pages": [
+              "sql/functions/overview",
+              "sql/functions/aggregates",
+              "sql/functions/string",
+              "sql/functions/date-time",
+              "sql/functions/json"
+            ]
+          },
+          {
+            "group": "System Catalog",
+            "pages": [
+              "sql/system-catalog/overview",
+              "sql/system-catalog/mz-catalog",
+              "sql/system-catalog/information-schema"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Deployment",
+        "groups": [
+          {
+            "group": "Cloud",
+            "pages": [
+              "deployment/cloud/overview",
+              "deployment/cloud/getting-started",
+              "deployment/cloud/regions"
+            ]
+          },
+          {
+            "group": "Self-Managed",
+            "pages": [
+              "deployment/self-managed/overview",
+              "deployment/self-managed/kubernetes",
+              "deployment/self-managed/docker",
+              "deployment/self-managed/configuration"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time incremental view maintenance using differential dataflow",
+    "PostgreSQL wire protocol compatibility for standard SQL queries",
+    "Native CDC connectors for PostgreSQL, MySQL, and SQL Server",
+    "Kafka integration for streaming data ingestion and output",
+    "Strong consistency guarantees across multiple data sources",
+    "Horizontally scalable compute with cluster-based architecture",
+    "Support for complex SQL including multi-way joins and aggregations",
+    "SUBSCRIBE command for streaming query results"
+  ],
+  "publicApiSurface": [
+    "CREATE SOURCE (Kafka, PostgreSQL, MySQL, SQL Server, Webhooks)",
+    "CREATE MATERIALIZED VIEW",
+    "CREATE VIEW",
+    "CREATE INDEX",
+    "CREATE SINK (Kafka)",
+    "SELECT with joins, aggregations, window functions",
+    "SUBSCRIBE for streaming results",
+    "CREATE CLUSTER for compute isolation",
+    "System catalog tables (mz_catalog, mz_internal)",
+    "PostgreSQL wire protocol (psql, JDBC, etc.)"
+  ]
+}
