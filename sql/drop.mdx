@@ -1,0 +1,210 @@
+---
+title: "DROP Commands"
+description: "Remove database objects from Materialize"
+---
+
+## Overview
+
+DROP commands permanently remove database objects from Materialize. Use these commands carefully, as dropping objects also affects all dependent objects.
+
+<Warning>
+DROP operations are permanent and cannot be undone. Always verify dependencies before dropping objects.
+</Warning>
+
+## Available DROP Commands
+
+<CardGroup cols={2}>
+  <Card title="DROP CLUSTER" icon="server" href="https://materialize.com/docs/sql/drop-cluster/">
+    Remove a cluster and all its replicas
+  </Card>
+  <Card title="DROP INDEX" icon="list" href="https://materialize.com/docs/sql/drop-index/">
+    Remove an index
+  </Card>
+  <Card title="DROP SOURCE" icon="database" href="https://materialize.com/docs/sql/drop-source/">
+    Remove a source and its subsources
+  </Card>
+  <Card title="DROP MATERIALIZED VIEW" icon="eye" href="https://materialize.com/docs/sql/drop-materialized-view/">
+    Remove a materialized view
+  </Card>
+  <Card title="DROP VIEW" icon="table" href="https://materialize.com/docs/sql/drop-view/">
+    Remove a regular view
+  </Card>
+  <Card title="DROP SINK" icon="arrow-right" href="https://materialize.com/docs/sql/drop-sink/">
+    Remove a sink
+  </Card>
+  <Card title="DROP TABLE" icon="table-columns" href="https://materialize.com/docs/sql/drop-table/">
+    Remove a table
+  </Card>
+  <Card title="DROP CONNECTION" icon="plug" href="https://materialize.com/docs/sql/drop-connection/">
+    Remove a connection
+  </Card>
+  <Card title="DROP SECRET" icon="key" href="https://materialize.com/docs/sql/drop-secret/">
+    Remove a secret
+  </Card>
+  <Card title="DROP DATABASE" icon="database" href="https://materialize.com/docs/sql/drop-database/">
+    Remove a database and all its objects
+  </Card>
+  <Card title="DROP SCHEMA" icon="folder" href="https://materialize.com/docs/sql/drop-schema/">
+    Remove a schema and all its objects
+  </Card>
+  <Card title="DROP ROLE" icon="user" href="https://materialize.com/docs/sql/drop-role/">
+    Remove a role
+  </Card>
+</CardGroup>
+
+## Syntax Patterns
+
+### Basic DROP
+
+```sql
+-- Drop a materialized view
+DROP MATERIALIZED VIEW my_view;
+
+-- Drop a source
+DROP SOURCE my_source;
+
+-- Drop a cluster
+DROP CLUSTER my_cluster;
+```
+
+### CASCADE vs RESTRICT
+
+```sql
+-- Drop with CASCADE (removes dependent objects)
+DROP MATERIALIZED VIEW my_view CASCADE;
+
+-- Drop with RESTRICT (fails if dependencies exist) - default behavior
+DROP MATERIALIZED VIEW my_view RESTRICT;
+```
+
+<Warning>
+CASCADE will drop all dependent objects without additional confirmation. Use with extreme caution in production.
+</Warning>
+
+### IF EXISTS
+
+```sql
+-- Safely drop if exists (no error if doesn't exist)
+DROP MATERIALIZED VIEW IF EXISTS my_view;
+
+DROP SOURCE IF EXISTS my_source CASCADE;
+```
+
+## Checking Dependencies
+
+Before dropping objects, check for dependencies:
+
+```sql
+-- Find objects that depend on a view
+SELECT
+    dependent.name AS dependent_object,
+    dependent.type AS object_type
+FROM mz_catalog.mz_objects dependent
+JOIN mz_internal.mz_object_dependencies dep ON dependent.id = dep.object_id
+JOIN mz_catalog.mz_objects target ON dep.referenced_object_id = target.id
+WHERE target.name = 'my_view';
+
+-- Find all dependencies recursively
+WITH RECURSIVE deps AS (
+    SELECT id, name
+    FROM mz_catalog.mz_objects
+    WHERE name = 'my_view'
+    UNION
+    SELECT o.id, o.name
+    FROM mz_catalog.mz_objects o
+    JOIN mz_internal.mz_object_dependencies d ON o.id = d.object_id
+    JOIN deps ON d.referenced_object_id = deps.id
+)
+SELECT * FROM deps;
+```
+
+## Common Use Cases
+
+### Clean Up Test Objects
+
+```sql
+-- Drop test views
+DROP MATERIALIZED VIEW IF EXISTS test_mv CASCADE;
+DROP VIEW IF EXISTS test_view;
+
+-- Drop test sources
+DROP SOURCE IF EXISTS test_source CASCADE;
+```
+
+### Remove Unused Clusters
+
+```sql
+-- First, check what's running on the cluster
+SELECT name, type
+FROM mz_catalog.mz_objects
+WHERE cluster_id = (
+    SELECT id FROM mz_catalog.mz_clusters WHERE name = 'old_cluster'
+);
+
+-- Drop the cluster (will fail if objects still use it)
+DROP CLUSTER old_cluster;
+```
+
+### Drop with Dependency Chain
+
+```sql
+-- Drop entire hierarchy
+DROP MATERIALIZED VIEW top_level_view CASCADE;
+-- This will also drop all views, indexes, and sinks that depend on it
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Check First" icon="magnifying-glass">
+    Always query dependencies before dropping objects
+  </Card>
+  <Card title="Use IF EXISTS" icon="shield-check">
+    Prevent errors in scripts with IF EXISTS clause
+  </Card>
+  <Card title="Avoid CASCADE in Prod" icon="triangle-exclamation">
+    Be extremely careful with CASCADE in production environments
+  </Card>
+  <Card title="Document Changes" icon="file-lines">
+    Keep track of dropped objects for troubleshooting
+  </Card>
+</CardGroup>
+
+## Cleanup Patterns
+
+### Drop All Objects in a Schema
+
+```sql
+-- List objects in schema first
+SELECT name, type FROM mz_catalog.mz_objects
+WHERE schema_id = (SELECT id FROM mz_catalog.mz_schemas WHERE name = 'old_schema');
+
+-- Drop schema and all contents
+DROP SCHEMA old_schema CASCADE;
+```
+
+### Drop All Test Objects
+
+```sql
+-- Drop all objects with 'test_' prefix
+DROP MATERIALIZED VIEW IF EXISTS test_orders CASCADE;
+DROP SOURCE IF EXISTS test_kafka_source CASCADE;
+DROP CLUSTER IF EXISTS test_cluster CASCADE;
+```
+
+## Related Commands
+
+<CardGroup cols={2}>
+  <Card title="CREATE Commands" icon="plus" href="/sql/overview">
+    Create new database objects
+  </Card>
+  <Card title="ALTER Commands" icon="pen" href="/sql/alter">
+    Modify existing database objects
+  </Card>
+  <Card title="SHOW Commands" icon="list" href="/sql/show">
+    Inspect database objects
+  </Card>
+  <Card title="System Catalog" icon="book" href="/sql/system-catalog/overview">
+    Query object metadata
+  </Card>
+</CardGroup>

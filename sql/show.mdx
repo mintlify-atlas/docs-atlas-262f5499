@@ -1,0 +1,275 @@
+---
+title: "SHOW Commands"
+description: "Inspect database objects and metadata in Materialize"
+---
+
+## Overview
+
+SHOW commands provide a convenient way to inspect database objects, their properties, and metadata in Materialize. These commands are similar to PostgreSQL's `\d` commands but work in any SQL client.
+
+## Available SHOW Commands
+
+<CardGroup cols={2}>
+  <Card title="SHOW CLUSTERS" icon="server" href="https://materialize.com/docs/sql/show-clusters/">
+    List all clusters
+  </Card>
+  <Card title="SHOW CLUSTER REPLICAS" icon="clone" href="https://materialize.com/docs/sql/show-cluster-replicas/">
+    List replicas for clusters
+  </Card>
+  <Card title="SHOW SOURCES" icon="database" href="https://materialize.com/docs/sql/show-sources/">
+    List all sources
+  </Card>
+  <Card title="SHOW SUBSOURCES" icon="diagram-project" href="https://materialize.com/docs/sql/show-subsources/">
+    List subsources for a source
+  </Card>
+  <Card title="SHOW MATERIALIZED VIEWS" icon="eye" href="https://materialize.com/docs/sql/show-materialized-views/">
+    List all materialized views
+  </Card>
+  <Card title="SHOW VIEWS" icon="table" href="https://materialize.com/docs/sql/show-views/">
+    List all regular views
+  </Card>
+  <Card title="SHOW INDEXES" icon="list" href="https://materialize.com/docs/sql/show-indexes/">
+    List all indexes
+  </Card>
+  <Card title="SHOW SINKS" icon="arrow-right" href="https://materialize.com/docs/sql/show-sinks/">
+    List all sinks
+  </Card>
+  <Card title="SHOW TABLES" icon="table-columns" href="https://materialize.com/docs/sql/show-tables/">
+    List all tables
+  </Card>
+  <Card title="SHOW COLUMNS" icon="columns" href="https://materialize.com/docs/sql/show-columns/">
+    Show columns for a table or view
+  </Card>
+  <Card title="SHOW CONNECTIONS" icon="plug" href="https://materialize.com/docs/sql/show-connections/">
+    List all connections
+  </Card>
+  <Card title="SHOW SECRETS" icon="key" href="https://materialize.com/docs/sql/show-secrets/">
+    List all secrets
+  </Card>
+  <Card title="SHOW DATABASES" icon="database" href="https://materialize.com/docs/sql/show-databases/">
+    List all databases
+  </Card>
+  <Card title="SHOW SCHEMAS" icon="folder" href="https://materialize.com/docs/sql/show-schemas/">
+    List all schemas
+  </Card>
+  <Card title="SHOW ROLES" icon="user" href="https://materialize.com/docs/sql/show-roles/">
+    List all roles
+  </Card>
+  <Card title="SHOW CREATE" icon="code" href="https://materialize.com/docs/sql/show-create-view/">
+    Show the DDL for creating an object
+  </Card>
+</CardGroup>
+
+## Common Patterns
+
+### List All Objects of a Type
+
+```sql
+-- Show all materialized views
+SHOW MATERIALIZED VIEWS;
+
+-- Show all sources
+SHOW SOURCES;
+
+-- Show all clusters
+SHOW CLUSTERS;
+```
+
+### Filter by Schema
+
+```sql
+-- Show views in a specific schema
+SHOW VIEWS FROM my_schema;
+
+-- Show tables in a specific database and schema
+SHOW TABLES FROM my_database.my_schema;
+```
+
+### Pattern Matching
+
+```sql
+-- Show views matching a pattern
+SHOW VIEWS LIKE 'order%';
+
+-- Show sources in a schema matching a pattern
+SHOW SOURCES FROM my_schema LIKE '%kafka%';
+```
+
+### Inspect Object Structure
+
+```sql
+-- Show columns of a table
+SHOW COLUMNS FROM orders;
+
+-- Show the SQL used to create a view
+SHOW CREATE VIEW my_view;
+
+-- Show indexes on a specific object
+SHOW INDEXES ON orders;
+```
+
+## Discovery Workflow
+
+<Steps>
+  <Step title="List databases and schemas">
+    Start by exploring the available databases and schemas:
+    
+    ```sql
+    SHOW DATABASES;
+    SHOW SCHEMAS FROM my_database;
+    ```
+  </Step>
+  
+  <Step title="Find objects in a schema">
+    List all objects in a schema:
+    
+    ```sql
+    SHOW SOURCES FROM my_schema;
+    SHOW MATERIALIZED VIEWS FROM my_schema;
+    SHOW TABLES FROM my_schema;
+    ```
+  </Step>
+  
+  <Step title="Inspect object details">
+    Get detailed information about specific objects:
+    
+    ```sql
+    SHOW COLUMNS FROM my_schema.orders;
+    SHOW CREATE MATERIALIZED VIEW my_schema.revenue_by_region;
+    ```
+  </Step>
+  
+  <Step title="Check cluster assignments">
+    See which cluster objects are running on:
+    
+    ```sql
+    SHOW CLUSTERS;
+    SHOW CLUSTER REPLICAS;
+    ```
+  </Step>
+</Steps>
+
+## Examples by Use Case
+
+### Debugging Data Pipelines
+
+```sql
+-- Show all sources and their status
+SHOW SOURCES;
+
+-- Check subsources for a PostgreSQL source
+SHOW SUBSOURCES FROM pg_source;
+
+-- Verify materialized views exist
+SHOW MATERIALIZED VIEWS LIKE 'orders%';
+
+-- Check if indexes are defined
+SHOW INDEXES ON order_totals;
+```
+
+### Resource Management
+
+```sql
+-- List all clusters and their replicas
+SHOW CLUSTERS;
+SHOW CLUSTER REPLICAS;
+
+-- Find objects on a specific cluster
+SELECT name, type FROM mz_catalog.mz_objects
+WHERE cluster_id = (
+    SELECT id FROM mz_catalog.mz_clusters WHERE name = 'my_cluster'
+);
+```
+
+### Security Auditing
+
+```sql
+-- List all roles
+SHOW ROLES;
+
+-- Show role membership
+SHOW ROLE MEMBERSHIP;
+
+-- List secrets (names only, not values)
+SHOW SECRETS;
+
+-- Show connections
+SHOW CONNECTIONS;
+```
+
+## SHOW CREATE Commands
+
+Get the DDL for recreating objects:
+
+```sql
+-- Show CREATE for different object types
+SHOW CREATE VIEW my_view;
+SHOW CREATE MATERIALIZED VIEW my_mv;
+SHOW CREATE SOURCE my_source;
+SHOW CREATE SINK my_sink;
+SHOW CREATE TABLE my_table;
+SHOW CREATE INDEX my_index;
+```
+
+<Tip>
+SHOW CREATE is useful for backing up object definitions or understanding how an object was created.
+</Tip>
+
+## Output Format
+
+Most SHOW commands return results as tables:
+
+```sql
+SHOW CLUSTERS;
+```
+
+```
+     name     | replicas
+--------------+----------
+ quickstart   | 1
+ ingest       | 2
+ compute      | 3
+```
+
+## SHOW vs System Catalog
+
+SHOW commands are convenient shortcuts, but for programmatic access or complex queries, use the system catalog:
+
+<Tabs>
+  <Tab title="SHOW Command">
+    ```sql
+    SHOW MATERIALIZED VIEWS;
+    ```
+    
+    Simple and concise for interactive use.
+  </Tab>
+  
+  <Tab title="System Catalog">
+    ```sql
+    SELECT name, cluster_id
+    FROM mz_catalog.mz_materialized_views
+    WHERE schema_id = (
+        SELECT id FROM mz_catalog.mz_schemas WHERE name = 'public'
+    );
+    ```
+    
+    More flexible for complex queries and filtering.
+  </Tab>
+</Tabs>
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="System Catalog" icon="book" href="/sql/system-catalog/overview">
+    Query detailed metadata programmatically
+  </Card>
+  <Card title="Monitoring" icon="chart-line" href="/operations/monitoring">
+    Monitor Materialize health and performance
+  </Card>
+  <Card title="CREATE Commands" icon="plus" href="/sql/overview">
+    Create new database objects
+  </Card>
+  <Card title="ALTER Commands" icon="pen" href="/sql/alter">
+    Modify existing database objects
+  </Card>
+</CardGroup>

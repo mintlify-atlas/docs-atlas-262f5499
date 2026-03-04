@@ -1,0 +1,369 @@
+---
+title: "SQL Server CDC"
+description: "Stream data from SQL Server databases using Change Data Capture"
+---
+
+## Overview
+
+Materialize can ingest data from SQL Server databases using Change Data Capture (CDC). This allows you to replicate tables from SQL Server into Materialize in real-time, capturing all inserts, updates, and deletes.
+
+<Note>
+Materialize supports SQL Server 2016 and later versions. SQL Server CDC must be enabled on the source database.
+</Note>
+
+## Prerequisites
+
+Before connecting SQL Server to Materialize, you need to:
+
+1. **Enable Change Data Capture (CDC)** on your SQL Server database
+2. **Enable SNAPSHOT isolation** for consistent reads during initial synchronization
+3. **Create a dedicated user** with appropriate permissions
+4. **Configure network access** to allow Materialize to connect
+
+### Enable CDC on SQL Server
+
+<Steps>
+  <Step title="Enable CDC on the database">
+    Connect to your SQL Server instance and enable CDC for the database:
+    
+    ```sql
+    -- Enable CDC for the database
+    USE YourDatabase;
+    GO
+    
+    EXEC sys.sp_cdc_enable_db;
+    GO
+    ```
+  </Step>
+  
+  <Step title="Enable CDC on specific tables">
+    Enable CDC for each table you want to replicate:
+    
+    ```sql
+    -- Enable CDC for a specific table
+    EXEC sys.sp_cdc_enable_table
+        @source_schema = N'dbo',
+        @source_name = N'your_table',
+        @role_name = NULL,
+        @supports_net_changes = 1;
+    GO
+    ```
+  </Step>
+  
+  <Step title="Enable SNAPSHOT isolation">
+    Enable SNAPSHOT isolation for consistent reads:
+    
+    ```sql
+    ALTER DATABASE YourDatabase
+    SET ALLOW_SNAPSHOT_ISOLATION ON;
+    GO
+    
+    ALTER DATABASE YourDatabase
+    SET READ_COMMITTED_SNAPSHOT ON;
+    GO
+    ```
+  </Step>
+</Steps>
+
+### Create a Replication User
+
+Create a dedicated SQL Server user for Materialize:
+
+```sql
+-- Create login
+CREATE LOGIN materialize_user WITH PASSWORD = 'strong_password_here';
+GO
+
+-- Create user in the database
+USE YourDatabase;
+GO
+
+CREATE USER materialize_user FOR LOGIN materialize_user;
+GO
+
+-- Grant necessary permissions
+GRANT SELECT ON SCHEMA::dbo TO materialize_user;
+GRANT SELECT ON SCHEMA::cdc TO materialize_user;
+GRANT VIEW DATABASE STATE TO materialize_user;
+GO
+```
+
+## Network Security
+
+<Tabs>
+  <Tab title="AWS PrivateLink">
+    For SQL Server on AWS RDS:
+    
+    1. Create a VPC endpoint service for your RDS instance
+    2. Configure Materialize connection with the PrivateLink endpoint
+    3. Update RDS security groups to allow traffic from Materialize
+    
+    See [Network Security Configuration](https://materialize.com/docs/ops/network-security/) for detailed setup.
+  </Tab>
+  
+  <Tab title="SSH Tunnel">
+    Use an SSH tunnel for secure connections:
+    
+    ```sql
+    CREATE CONNECTION ssh_tunnel TO SSH TUNNEL (
+      HOST 'bastion.example.com',
+      USER 'materialize',
+      PORT 22
+    );
+    
+    CREATE CONNECTION sql_server_connection TO SQL SERVER (
+      HOST 'sqlserver.internal',
+      PORT 1433,
+      DATABASE 'YourDatabase',
+      USER 'materialize_user',
+      PASSWORD SECRET sql_server_password,
+      SSH TUNNEL ssh_tunnel
+    );
+    ```
+  </Tab>
+  
+  <Tab title="IP Allowlist">
+    Allow Materialize's IP addresses in your SQL Server firewall rules.
+    
+    Get Materialize's egress IPs from the Console or by contacting support.
+  </Tab>
+</Tabs>
+
+## Creating a Connection
+
+Create a connection to your SQL Server database:
+
+```sql
+-- Store the password as a secret
+CREATE SECRET sql_server_password AS '<your_password>';
+
+-- Create the connection
+CREATE CONNECTION sql_server_connection TO SQL SERVER (
+  HOST 'sqlserver.example.com',
+  PORT 1433,
+  DATABASE 'YourDatabase',
+  USER 'materialize_user',
+  PASSWORD SECRET sql_server_password
+);
+```
+
+### Connection Options
+
+<ParamField path="HOST" type="string" required>
+  The SQL Server hostname or IP address
+</ParamField>
+
+<ParamField path="PORT" type="integer" default="1433">
+  The SQL Server port number
+</ParamField>
+
+<ParamField path="DATABASE" type="string" required>
+  The database name to connect to
+</ParamField>
+
+<ParamField path="USER" type="string" required>
+  The username for authentication
+</ParamField>
+
+<ParamField path="PASSWORD" type="secret" required>
+  The password, stored as a secret
+</ParamField>
+
+<ParamField path="SSH TUNNEL" type="connection">
+  Optional SSH tunnel connection for secure access
+</ParamField>
+
+## Creating a Source
+
+### Replicate All Tables
+
+Ingest all tables with CDC enabled in your SQL Server database:
+
+```sql
+CREATE SOURCE mz_source
+  FROM SQL SERVER CONNECTION sql_server_connection
+  FOR ALL TABLES;
+```
+
+Materialize will automatically create a **subsource** for each CDC-enabled table.
+
+### Replicate Specific Tables
+
+Replicate only specific tables:
+
+```sql
+CREATE SOURCE mz_source
+  FROM SQL SERVER CONNECTION sql_server_connection
+  FOR TABLES (dbo.orders, dbo.customers);
+```
+
+### Handle Schema Collisions
+
+If you have tables with the same name in different schemas, use aliases:
+
+```sql
+CREATE SOURCE mz_source
+  FROM SQL SERVER CONNECTION sql_server_connection
+  FOR TABLES (
+    schema1.products AS s1_products,
+    schema2.products AS s2_products
+  );
+```
+
+## Viewing Subsources
+
+After creating a source, view the created subsources:
+
+```sql
+SHOW SOURCES;
+```
+
+```
+         name         |   type     |  cluster
+----------------------+------------+-----------
+ mz_source            | sql-server | 
+ mz_source_progress   | progress   |
+ orders               | subsource  |
+ customers            | subsource  |
+```
+
+Each subsource represents a replicated table and can be queried like a regular table:
+
+```sql
+SELECT * FROM orders LIMIT 10;
+```
+
+## Monitoring Ingestion Progress
+
+Monitor replication progress using the progress subsource:
+
+```sql
+SELECT lsn FROM mz_source_progress;
+```
+
+The `lsn` (Log Sequence Number) indicates how far replication has progressed. This value should increase as new changes are captured.
+
+### Check Replication Lag
+
+Query the system catalog to monitor replication health:
+
+```sql
+SELECT
+  s.name,
+  ss.snapshot_committed,
+  ss.offset_known,
+  ss.offset_committed
+FROM mz_sources s
+JOIN mz_internal.mz_source_statistics ss ON s.id = ss.id
+WHERE s.name = 'mz_source';
+```
+
+## Schema Changes
+
+### Compatible Changes
+
+Materialize automatically handles these schema changes:
+
+- Adding new columns (nullable or with defaults)
+- Adding new tables with CDC enabled
+- Changing column data types (compatible changes)
+
+### Incompatible Changes
+
+These changes require recreating the source:
+
+- Dropping columns
+- Renaming columns
+- Changing column types (incompatible changes)
+- Dropping tables
+
+<Warning>
+Materialize will error if it encounters an incompatible schema change. You'll need to drop and recreate the source.
+</Warning>
+
+## Troubleshooting
+
+### CDC Not Enabled
+
+**Error:** `Change Data Capture is not enabled on database 'YourDatabase'`
+
+**Solution:** Enable CDC on the database and tables:
+
+```sql
+EXEC sys.sp_cdc_enable_db;
+EXEC sys.sp_cdc_enable_table
+  @source_schema = N'dbo',
+  @source_name = N'your_table',
+  @role_name = NULL;
+```
+
+### Permission Denied
+
+**Error:** `The user does not have permission to read CDC tables`
+
+**Solution:** Grant the necessary permissions:
+
+```sql
+GRANT SELECT ON SCHEMA::cdc TO materialize_user;
+```
+
+### Connection Timeout
+
+**Error:** `Connection timeout while connecting to SQL Server`
+
+**Solution:** 
+- Verify network connectivity
+- Check firewall rules
+- Ensure SQL Server is accepting TCP/IP connections
+
+### High Replication Lag
+
+If replication is lagging behind:
+
+1. **Check SQL Server CDC cleanup**: Ensure CDC cleanup isn't too aggressive
+2. **Verify cluster size**: Consider scaling up your Materialize cluster
+3. **Monitor SQL Server load**: High load can slow CDC processing
+
+```sql
+-- Check CDC cleanup retention (SQL Server)
+SELECT * FROM sys.sp_cdc_help_jobs;
+
+-- Increase retention if needed
+EXEC sys.sp_cdc_change_job
+  @job_type = 'cleanup',
+  @retention = 10080; -- 7 days in minutes
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use Dedicated Cluster" icon="server">
+    Create a dedicated cluster for SQL Server ingestion to isolate resource usage
+  </Card>
+  <Card title="Monitor CDC Cleanup" icon="broom">
+    Configure CDC cleanup retention to balance storage and recovery needs
+  </Card>
+  <Card title="Enable for Key Tables First" icon="key">
+    Start with critical tables, then expand to additional tables
+  </Card>
+  <Card title="Test Schema Changes" icon="flask">
+    Test schema change handling in a non-production environment
+  </Card>
+</CardGroup>
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="CREATE SOURCE: SQL Server" icon="code" href="/sql/create-source">
+    SQL syntax reference
+  </Card>
+  <Card title="Network Security" icon="shield" href="https://materialize.com/docs/ops/network-security/">
+    Configure secure connections
+  </Card>
+  <Card title="Monitoring Sources" icon="chart-line" href="/operations/monitoring">
+    Monitor source health and performance
+  </Card>
+  <Card title="SQL Server CDC Documentation" icon="book" href="https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server">
+    Microsoft's CDC documentation
+  </Card>
+</CardGroup>

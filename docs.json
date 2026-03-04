@@ -54,6 +54,7 @@
               "ingest/overview",
               "ingest/postgres",
               "ingest/mysql",
+              "ingest/sql-server",
               "ingest/kafka",
               "ingest/webhooks"
             ]
@@ -116,7 +117,10 @@
               "sql/create-index",
               "sql/create-sink",
               "sql/create-table",
-              "sql/create-cluster"
+              "sql/create-cluster",
+              "sql/alter",
+              "sql/drop",
+              "sql/show"
             ]
           },
           {

@@ -1,0 +1,121 @@
+---
+title: "ALTER Commands"
+description: "Modify existing database objects in Materialize"
+---
+
+## Overview
+
+ALTER commands allow you to modify existing database objects in Materialize. These commands let you change object properties, rename objects, and update configurations without recreating them.
+
+## Available ALTER Commands
+
+<CardGroup cols={2}>
+  <Card title="ALTER CLUSTER" icon="server" href="https://materialize.com/docs/sql/alter-cluster/">
+    Modify cluster configuration, including replicas and scheduling
+  </Card>
+  <Card title="ALTER INDEX" icon="list" href="https://materialize.com/docs/sql/alter-index/">
+    Rename indexes or change their cluster assignment
+  </Card>
+  <Card title="ALTER SOURCE" icon="database" href="https://materialize.com/docs/sql/alter-source/">
+    Modify source properties and cluster assignment
+  </Card>
+  <Card title="ALTER MATERIALIZED VIEW" icon="eye" href="https://materialize.com/docs/sql/alter-materialized-view/">
+    Change materialized view configuration and cluster
+  </Card>
+  <Card title="ALTER VIEW" icon="table" href="https://materialize.com/docs/sql/alter-view/">
+    Rename views
+  </Card>
+  <Card title="ALTER SINK" icon="arrow-right" href="https://materialize.com/docs/sql/alter-sink/">
+    Modify sink properties
+  </Card>
+  <Card title="ALTER TABLE" icon="table-columns" href="https://materialize.com/docs/sql/alter-table/">
+    Add or rename columns in tables
+  </Card>
+  <Card title="ALTER SECRET" icon="key" href="https://materialize.com/docs/sql/alter-secret/">
+    Modify secret values
+  </Card>
+  <Card title="ALTER ROLE" icon="user" href="https://materialize.com/docs/sql/alter-role/">
+    Change role attributes
+  </Card>
+  <Card title="ALTER SYSTEM" icon="gears" href="https://materialize.com/docs/sql/alter-system-set/">
+    Set or reset system configuration parameters
+  </Card>
+</CardGroup>
+
+## Common Use Cases
+
+### Rename an Object
+
+```sql
+-- Rename a materialized view
+ALTER MATERIALIZED VIEW old_name RENAME TO new_name;
+
+-- Rename a source
+ALTER SOURCE old_source RENAME TO new_source;
+```
+
+### Change Cluster Assignment
+
+```sql
+-- Move a materialized view to a different cluster
+ALTER MATERIALIZED VIEW my_view SET CLUSTER = compute_cluster;
+
+-- Move a source to a different cluster
+ALTER SOURCE my_source SET CLUSTER = ingest_cluster;
+```
+
+### Modify Cluster Configuration
+
+```sql
+-- Rename a cluster
+ALTER CLUSTER old_cluster RENAME TO new_cluster;
+
+-- Set cluster replication factor
+ALTER CLUSTER my_cluster SET (REPLICATION FACTOR = 2);
+```
+
+### Update System Parameters
+
+```sql
+-- Set a system parameter
+ALTER SYSTEM SET statement_timeout = '30s';
+
+-- Reset to default
+ALTER SYSTEM RESET statement_timeout;
+```
+
+## Important Considerations
+
+<Warning>
+Some ALTER operations may cause brief interruptions to query execution or data ingestion. Plan changes during maintenance windows when possible.
+</Warning>
+
+<Note>
+- Renaming objects updates all dependencies automatically
+- Changing cluster assignments may cause brief downtime during the transition
+- ALTER operations are transactional and atomic
+- Not all object properties can be modified with ALTER; some require recreating the object
+</Note>
+
+## Restrictions
+
+- You cannot alter an object's fundamental type (e.g., convert a view to a materialized view)
+- Some properties are immutable and require dropping and recreating the object
+- Certain operations require ownership or specific privileges
+
+## Related Commands
+
+<CardGroup cols={2}>
+  <Card title="CREATE Commands" icon="plus" href="/sql/overview">
+    Create new database objects
+  </Card>
+  <Card title="DROP Commands" icon="trash" href="/sql/drop">
+    Remove existing database objects
+  </Card>
+  <Card title="SHOW Commands" icon="list" href="/sql/show">
+    Inspect database objects
+  </Card>
+  <Card title="GRANT/REVOKE" icon="shield" href="https://materialize.com/docs/sql/grant-privilege/">
+    Manage object privileges
+  </Card>
+</CardGroup>
