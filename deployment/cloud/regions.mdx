@@ -1,0 +1,285 @@
+---
+title: "Materialize Cloud Regions"
+description: "Available deployment regions, data residency, and latency considerations."
+---
+
+## Overview
+
+Materialize Cloud is available in multiple geographic regions across major cloud providers. Choosing the right region is important for:
+
+- **Latency**: Minimize network latency to data sources and consumers
+- **Data residency**: Meet compliance requirements for data location
+- **Availability**: Ensure high availability within your geographic area
+- **Cost**: Reduce data transfer costs by collocating with data sources
+
+## Available Regions
+
+Materialize Cloud currently supports the following regions:
+
+### AWS Regions
+
+| Region | Location | Availability |
+|--------|----------|-------------|
+| `us-east-1` | US East (N. Virginia) | General Availability |
+| `us-west-2` | US West (Oregon) | General Availability |
+| `eu-west-1` | Europe (Ireland) | General Availability |
+| `eu-central-1` | Europe (Frankfurt) | General Availability |
+| `ap-southeast-1` | Asia Pacific (Singapore) | General Availability |
+| `ap-northeast-1` | Asia Pacific (Tokyo) | General Availability |
+
+### GCP Regions
+
+| Region | Location | Availability |
+|--------|----------|-------------|
+| `us-central1` | US Central (Iowa) | General Availability |
+| `us-east4` | US East (N. Virginia) | General Availability |
+| `europe-west1` | Europe (Belgium) | General Availability |
+| `asia-northeast1` | Asia Northeast (Tokyo) | General Availability |
+
+### Azure Regions
+
+| Region | Location | Availability |
+|--------|----------|-------------|
+| `eastus` | East US (Virginia) | Preview |
+| `westeurope` | West Europe (Netherlands) | Preview |
+
+<Note>
+Additional regions are being added regularly. Contact your Materialize account team if you need a region not listed here.
+</Note>
+
+## Region Selection Guidelines
+
+### Collocate with Data Sources
+
+For best performance, deploy Materialize in the same region as your data sources:
+
+```sql
+-- Example: If your Kafka cluster is in us-east-1,
+-- create your Materialize environment in us-east-1
+```
+
+Benefits of collocating:
+- **Lower latency**: Minimal network delay when ingesting data
+- **Reduced costs**: No cross-region data transfer charges
+- **Higher throughput**: Better network performance
+
+### Consider Data Consumers
+
+If your application consuming Materialize data is in a different region than your sources:
+
+1. **Prioritize sources**: If ingesting high-volume streaming data, prioritize source proximity
+2. **Prioritize consumers**: If query latency is critical, prioritize consumer proximity
+3. **Use multi-region**: For global applications, consider deploying multiple Materialize environments
+
+### Compliance and Data Residency
+
+Some regulations require data to remain in specific geographic regions:
+
+- **GDPR (Europe)**: Use `eu-west-1` or `eu-central-1` for EU data
+- **Data Sovereignty**: Select regions based on your country's requirements
+- **Industry Regulations**: Healthcare, financial, and government sectors may have specific requirements
+
+<Warning>
+Data processed in Materialize remains in the selected region. However, metadata about your account (user information, billing) may be stored in the US.
+</Warning>
+
+## Multi-Region Deployments
+
+For global applications, you can deploy multiple Materialize environments across regions:
+
+### Use Cases
+
+1. **Geographic distribution**: Serve users from nearby regions
+2. **Disaster recovery**: Maintain standby environments in different regions
+3. **Data sovereignty**: Keep region-specific data in compliant regions
+4. **Testing**: Separate production and development environments by region
+
+### Architecture Example
+
+```
+┌─────────────────┐
+│   Application   │
+│   (Global)      │
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    │         │
+┌───▼──┐  ┌──▼───┐
+│ US   │  │ EU   │
+│ Env  │  │ Env  │
+└──┬───┘  └───┬──┘
+   │          │
+┌──▼──┐   ┌──▼──┐
+│Kafka│   │Kafka│
+│ US  │   │ EU  │
+└─────┘   └─────┘
+```
+
+### Cross-Region Considerations
+
+- **Data replication**: You must manage replication between environments
+- **Consistency**: Eventual consistency between regions
+- **Cost**: Multiple environments incur separate compute charges
+- **Management**: Each environment is managed independently
+
+## Network Connectivity
+
+### Public Internet Access
+
+By default, Materialize environments are accessible over the public internet with:
+
+- TLS encryption (required)
+- IP allowlisting (optional)
+- VPN connections (optional)
+
+### Private Connectivity
+
+For enhanced security and performance, Materialize supports private connectivity:
+
+#### AWS PrivateLink
+
+Connect to Materialize without traversing the public internet:
+
+```sql
+-- Create a connection using AWS PrivateLink
+CREATE CONNECTION privatelink_connection TO AWS PRIVATELINK (
+  SERVICE NAME 'com.amazonaws.vpce.us-east-1.vpce-svc-xxxxx',
+  AVAILABILITY ZONES ('use1-az1', 'use1-az2')
+);
+```
+
+Benefits:
+- Private network path
+- Reduced latency
+- Enhanced security
+- No public IP exposure
+
+#### GCP Private Service Connect
+
+Similar to AWS PrivateLink for GCP environments:
+
+```sql
+CREATE CONNECTION psc_connection TO GCP PRIVATE SERVICE CONNECT (
+  SERVICE ATTACHMENT 'projects/PROJECT/regions/REGION/serviceAttachments/ATTACHMENT'
+);
+```
+
+#### Azure Private Link
+
+Private connectivity for Azure-hosted environments (Preview).
+
+## Latency Considerations
+
+### Typical Latencies
+
+Approximate network latencies from various locations to Materialize regions:
+
+| From → To | us-east-1 | eu-west-1 | ap-southeast-1 |
+|-----------|-----------|-----------|----------------|
+| US East | 1-2ms | 80-90ms | 200-220ms |
+| US West | 70-80ms | 140-150ms | 140-160ms |
+| Europe | 80-90ms | 1-2ms | 160-180ms |
+| Asia | 200-220ms | 160-180ms | 1-2ms |
+
+<Note>
+Actual latencies vary based on network conditions, ISP routing, and other factors.
+</Note>
+
+### Optimizing for Latency
+
+1. **Choose nearby regions**: Deploy in the region closest to your highest-priority traffic
+2. **Use CDNs**: For HTTP traffic, use CloudFlare or similar CDNs
+3. **Connection pooling**: Maintain persistent connections to reduce connection overhead
+4. **Batch operations**: Group multiple queries when possible
+
+## Region Migration
+
+Currently, Materialize environments cannot be migrated between regions. To change regions:
+
+1. Create a new environment in the target region
+2. Recreate sources, materialized views, and other objects
+3. Reconfigure applications to use the new endpoint
+4. Verify functionality
+5. Delete the old environment
+
+<Warning>
+Region migration requires downtime and manual recreation of objects. Plan accordingly.
+</Warning>
+
+### Migration Checklist
+
+- [ ] Export DDL statements from current environment
+- [ ] Create new environment in target region
+- [ ] Update network configurations (allowlists, PrivateLink)
+- [ ] Recreate connections to data sources
+- [ ] Recreate sources and materialized views
+- [ ] Update application connection strings
+- [ ] Test functionality in new environment
+- [ ] Cutover traffic to new environment
+- [ ] Monitor for issues
+- [ ] Delete old environment
+
+## Availability Zones
+
+Within each region, Materialize automatically distributes resources across multiple availability zones for high availability:
+
+- **Automatic failover**: If an AZ fails, traffic routes to healthy AZs
+- **Data replication**: Data is replicated across AZs
+- **No configuration**: AZ distribution is automatic
+
+### Cluster Replication
+
+For enhanced availability, use cluster replication:
+
+```sql
+CREATE CLUSTER my_cluster (
+  SIZE = '200cc',
+  REPLICATION FACTOR = 2  -- Creates 2 replicas across AZs
+);
+```
+
+Benefits:
+- Zero downtime during AZ failures
+- Load balancing across replicas
+- Higher query throughput
+
+## Cost Considerations
+
+### Data Transfer Costs
+
+- **Intra-region**: Free for data transfer within the same region
+- **Cross-region**: Standard cloud provider rates apply
+- **Internet egress**: Charges apply for data sent to the internet
+
+### Region Pricing
+
+Compute pricing is generally consistent across regions, but some regions may have slight variations. Check the [pricing page](https://materialize.com/pricing) for region-specific details.
+
+## Support and SLAs
+
+All generally available regions are covered by Materialize's standard SLA:
+
+- **99.9% uptime**: Guaranteed availability
+- **24/7 support**: Available for all production environments
+- **Regional failover**: Automatic within multi-AZ deployments
+
+<Note>
+Preview regions may have different SLA terms. Contact your account team for details.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Getting Started" icon="rocket" href="/deployment/cloud/getting-started">
+    Create your first environment in your chosen region
+  </Card>
+  <Card title="Network Security" icon="shield" href="/security/network-policies">
+    Configure IP allowlists and private connectivity
+  </Card>
+  <Card title="Disaster Recovery" icon="life-ring" href="/manage/disaster-recovery">
+    Plan for multi-region disaster recovery
+  </Card>
+  <Card title="Performance Tuning" icon="gauge" href="/manage/performance">
+    Optimize performance for your region
+  </Card>
+</CardGroup>

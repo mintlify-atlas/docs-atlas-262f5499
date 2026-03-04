@@ -1,0 +1,241 @@
+---
+title: "Ingesting Data Overview"
+description: "Learn how to ingest data into Materialize from external systems using sources"
+---
+
+Materialize ingests data from various external systems using **sources**. A source describes an external system you want Materialize to read data from and provides the necessary connection details and configuration.
+
+## Available Data Sources
+
+Materialize supports ingesting data from the following external systems:
+
+<CardGroup cols={2}>
+  <Card title="PostgreSQL" icon="database" href="/ingest/postgres">
+    Stream data from PostgreSQL databases using Change Data Capture (CDC)
+  </Card>
+  <Card title="MySQL" icon="database" href="/ingest/mysql">
+    Stream data from MySQL databases using binlog replication
+  </Card>
+  <Card title="Kafka" icon="stream" href="/ingest/kafka">
+    Consume messages from Kafka and Redpanda topics
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/ingest/webhooks">
+    Accept HTTP POST requests from webhook providers
+  </Card>
+</CardGroup>
+
+## Core Concepts
+
+### Sources and Clusters
+
+Sources in Materialize require a [cluster](/concepts/clusters) to provide the compute resources needed to ingest data. Best practices:
+
+<Tip>
+If possible, **dedicate a cluster just for sources**. Avoid using the same cluster for sources and other objects like materialized views or sinks.
+</Tip>
+
+### Connections
+
+Connections describe how to connect and authenticate to external systems. Once created, a connection is **reusable** across multiple `CREATE SOURCE` statements.
+
+```sql
+-- Create a connection (example for PostgreSQL)
+CREATE SECRET pgpass AS '<POSTGRES_PASSWORD>';
+
+CREATE CONNECTION pg_connection TO POSTGRES (
+    HOST 'instance.foo000.us-west-1.rds.amazonaws.com',
+    PORT 5432,
+    USER 'postgres',
+    PASSWORD SECRET pgpass,
+    SSL MODE 'require',
+    DATABASE 'postgres'
+);
+```
+
+## Data Ingestion Lifecycle
+
+### 1. Snapshotting
+
+When a new source is created, Materialize performs a sync of all data available in the external system before it starts ingesting new data — an operation known as **snapshotting**.
+
+<Warning>
+You are **not able to query the source until snapshotting is complete**. Queries issued against sources undergoing snapshotting will hang until the operation completes.
+</Warning>
+
+**Key considerations:**
+
+- The duration depends on the volume of data and the size of the cluster
+- Run source creation during **off-peak hours** when possible
+- **Limit the volume of data** that is synced into Materialize
+- For upsert sources, consider using a larger cluster during snapshotting
+
+**Monitoring progress:**
+
+You can monitor snapshotting progress in the Materialize Console or by querying system catalog tables:
+
+```sql
+SELECT snapshot_committed
+FROM mz_internal.mz_source_statistics
+WHERE id = '<SOURCE_ID>';
+```
+
+### 2. Running/Steady-State
+
+Once snapshotting completes, Materialize transitions to running state and continually ingests changes from the upstream system in real-time.
+
+### 3. Hydration
+
+When a cluster is restarted (such as after resizing), objects on that cluster undergo **hydration** — the reconstruction of in-memory state by reading data from Materialize's storage layer. This does **not** require reading from the upstream system.
+
+## Best Practices
+
+### Scheduling
+
+For production deployments:
+
+- Create sources during **off-peak hours** to minimize operational risk
+- Plan for the initial snapshotting duration based on data volume
+- Monitor CPU and memory utilization during snapshotting
+
+### Resource Management
+
+**Dedicate a cluster for sources:**
+
+```sql
+CREATE CLUSTER ingest_cluster SIZE = '100cc';
+
+SET CLUSTER = ingest_cluster;
+
+CREATE SOURCE my_source FROM ...
+```
+
+**Right-size your cluster:**
+
+- Start with a larger cluster for snapshotting (especially for upsert sources)
+- Downsize to align with steady-state resource needs after snapshotting completes
+
+```sql
+-- After snapshotting is complete
+ALTER CLUSTER ingest_cluster SET (SIZE = '50cc');
+```
+
+### Limit Data Volume
+
+Ingest only the data you need:
+
+- For PostgreSQL: Create publications with specific tables instead of all tables
+- For MySQL: Select specific schemas or tables
+- For Kafka: Use appropriate topic filtering
+
+## Network Security
+
+Materialize supports multiple network security options:
+
+### AWS PrivateLink (Cloud Only)
+
+Securely connect to resources in your AWS VPC without exposing them to the public internet:
+
+```sql
+CREATE CONNECTION privatelink_svc TO AWS PRIVATELINK (
+    SERVICE NAME 'com.amazonaws.vpce.us-east-1.vpce-svc-0e123abc123198abc',
+    AVAILABILITY ZONES ('use1-az1', 'use1-az4')
+);
+```
+
+### SSH Tunnel
+
+Connect through an SSH bastion host:
+
+```sql
+CREATE CONNECTION ssh_connection TO SSH TUNNEL (
+    HOST 'bastion-host',
+    PORT 22,
+    USER 'materialize'
+);
+```
+
+### Static IP Allowlist
+
+Allow connections from Materialize's static egress IP addresses:
+
+```sql
+SELECT * FROM mz_egress_ips;
+```
+
+## Monitoring Data Ingestion
+
+### Check Source Status
+
+```sql
+SELECT *
+FROM mz_internal.mz_source_statuses
+WHERE name = '<SOURCE_NAME>';
+```
+
+**Common statuses:**
+
+- `running`: Source is actively ingesting data
+- `starting`: Source is initializing
+- `paused`: Cluster has 0 replicas
+- `stalled` or `failed`: Configuration issue (check the error field)
+
+### Monitor Ingestion Progress
+
+```sql
+SELECT
+    id,
+    name,
+    snapshot_committed,
+    bytes_received,
+    messages_received
+FROM mz_internal.mz_source_statistics
+WHERE name = '<SOURCE_NAME>';
+```
+
+## Troubleshooting
+
+### Source Not Ingesting Data
+
+1. Check the source status in the console or via `mz_source_statuses`
+2. Verify the cluster has at least 1 replica
+3. Check for configuration errors in the error message
+4. Ensure network connectivity to the upstream system
+
+### Slow Snapshotting
+
+1. Scale up the cluster size temporarily:
+
+```sql
+ALTER CLUSTER ingest_cluster SET (SIZE = '200cc');
+```
+
+2. After snapshotting completes, scale back down:
+
+```sql
+ALTER CLUSTER ingest_cluster SET (SIZE = '100cc');
+```
+
+### Memory Issues with Upsert Sources
+
+Upsert sources (including Debezium-formatted sources) can be memory-intensive:
+
+- Use standard-sized clusters that automatically spill to disk
+- Start with a larger cluster size for snapshotting
+- Monitor memory utilization during steady-state
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="PostgreSQL CDC" icon="database" href="/ingest/postgres">
+    Set up Change Data Capture from PostgreSQL
+  </Card>
+  <Card title="MySQL CDC" icon="database" href="/ingest/mysql">
+    Configure binlog replication for MySQL
+  </Card>
+  <Card title="Kafka Streaming" icon="stream" href="/ingest/kafka">
+    Consume Kafka topics with various formats
+  </Card>
+  <Card title="Webhook Sources" icon="webhook" href="/ingest/webhooks">
+    Create HTTP endpoints for webhook data
+  </Card>
+</CardGroup>

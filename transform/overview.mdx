@@ -1,0 +1,211 @@
+---
+title: 'Transform Data Overview'
+description: 'Learn how to efficiently transform streaming data using Materialize SQL with incremental view maintenance'
+---
+
+## Introduction
+
+Materialize enables you to transform, deliver, and act on fast-changing data using standard SQL. Unlike traditional databases, Materialize maintains query results incrementally — as new data arrives, it updates only what changed, providing consistently fresh results with minimal latency.
+
+This is fundamentally different from batch processing or periodic refresh patterns. Materialize recasts your SQL queries as **dataflows** that react efficiently to changes in real-time.
+
+## How Materialize transforms data
+
+### SELECT statements
+
+At the core of data transformation in Materialize is the `SELECT` statement. You can query from:
+
+- **Sources** - streaming data from Kafka, PostgreSQL CDC, MySQL CDC, or webhooks
+- **Tables** - user-defined data stored in Materialize
+- **Views** - saved query definitions
+- **Materialized views** - persisted, incrementally-maintained query results
+
+```sql
+SELECT [ ALL | DISTINCT [ ON ( col_ref [, ...] ) ] ]
+    [ { * | projection_expr [ [ AS ] output_name ] } [, ...] ]
+    [ FROM table_expr [ join_expr | , ] ... ]
+    [ WHERE condition_expr ]
+    [ GROUP BY grouping_expr [, ...] ]
+    [ HAVING having_expr ]
+    [ ORDER BY projection_expr [ ASC | DESC ] [, ...] ]
+    [ LIMIT { integer } [ OFFSET { integer } ] ]
+```
+
+### Key SQL capabilities
+
+Materialize supports comprehensive SQL functionality:
+
+- **Joins** - inner, left outer, right outer, full outer, cross joins, and lateral subqueries
+- **Aggregations** - `SUM`, `COUNT`, `AVG`, `MIN`, `MAX`, `STDDEV`, and more
+- **Window operations** - through idiomatic patterns optimized for streaming
+- **Common Table Expressions (CTEs)** - including recursive CTEs
+- **Subqueries** - with automatic decorrelation optimization
+- **Complex filtering** - including temporal filters with `mz_now()`
+
+## Views vs materialized views
+
+### Regular views
+
+A **view** is a named SQL query that doesn't compute results until queried:
+
+```sql
+CREATE VIEW purchase_summary AS
+SELECT 
+    region_id,
+    COUNT(*) as purchase_count,
+    SUM(amount) as total_amount
+FROM purchases
+GROUP BY region_id;
+```
+
+Views are lightweight — they're just query aliases. To maintain results in memory for fast access, create an **index** on the view:
+
+```sql
+CREATE INDEX purchase_summary_idx ON purchase_summary(region_id);
+```
+
+When you index a view, Materialize incrementally maintains the results in memory within the cluster where the index exists.
+
+### Materialized views
+
+A **materialized view** persists results in durable storage and incrementally updates them as data changes:
+
+```sql
+CREATE MATERIALIZED VIEW purchase_summary_mv AS
+SELECT 
+    region_id,
+    COUNT(*) as purchase_count,
+    SUM(amount) as total_amount
+FROM purchases
+GROUP BY region_id;
+```
+
+Materialized views are ideal when you need:
+
+- **Cross-cluster access** - query results from any cluster, not just where they're maintained
+- **Durability** - results survive cluster restarts
+- **External sinks** - push results to Kafka or other systems
+- **Separation of compute** - maintain views on one cluster, query from another
+
+<Tip>
+  For single-cluster, low-latency queries, prefer **indexed views** (views + indexes). For cross-cluster access and durability, use **materialized views**.
+</Tip>
+
+## Incremental maintenance
+
+The power of Materialize lies in **incremental view maintenance**. Instead of recomputing entire query results on every data change, Materialize:
+
+1. **Tracks changes** - monitors inserts, updates, and deletes in source data
+2. **Propagates updates** - flows changes through the query dataflow
+3. **Updates incrementally** - modifies only affected result rows
+4. **Maintains consistency** - ensures all views reflect a consistent snapshot of input data
+
+This approach provides orders-of-magnitude better performance than traditional batch recomputation, especially for complex queries over large datasets.
+
+### Example: TPC-H Query 15
+
+Here's a real-world example showing Materialize's capabilities with a complex TPC-H benchmark query:
+
+```sql
+-- Create a load generator source with TPC-H data
+CREATE SOURCE tpch
+  FROM LOAD GENERATOR TPCH (SCALE FACTOR 1)
+  FOR ALL TABLES;
+
+-- Define a view for revenue calculation
+CREATE VIEW revenue (supplier_no, total_revenue) AS
+    SELECT
+        l_suppkey,
+        SUM(l_extendedprice * (1 - l_discount))
+    FROM
+        lineitem
+    WHERE
+        l_shipdate >= DATE '1996-01-01'
+        AND l_shipdate < DATE '1996-01-01' + INTERVAL '3' month
+    GROUP BY
+        l_suppkey;
+
+-- Create a materialized view with join and subquery
+CREATE MATERIALIZED VIEW tpch_q15 AS
+  SELECT
+    s_suppkey,
+    s_name,
+    s_address,
+    s_phone,
+    total_revenue
+FROM
+    supplier,
+    revenue
+WHERE
+    s_suppkey = supplier_no
+    AND total_revenue = (
+        SELECT max(total_revenue)
+        FROM revenue
+    )
+ORDER BY
+    s_suppkey;
+
+-- Create an index for fast lookups
+CREATE INDEX tpch_q15_idx ON tpch_q15 (s_suppkey);
+```
+
+As new line items and suppliers stream in, Materialize maintains `tpch_q15` incrementally. You can query it immediately:
+
+```sql
+SELECT * FROM tpch_q15;
+```
+
+The results are always current, reflecting all changes from the source data.
+
+## PostgreSQL compatibility
+
+Materialize supports a large subset of PostgreSQL syntax and semantics, making it easy to:
+
+- Use familiar SQL patterns from PostgreSQL
+- Connect with PostgreSQL-compatible tools and clients (pgAdmin, DBeaver, etc.)
+- Migrate queries with minimal changes
+- Use the `psql` client or any PostgreSQL driver
+
+## Query optimization
+
+Materialize automatically optimizes queries through:
+
+- **Subquery decorrelation** - rewrites correlated subqueries for efficiency
+- **Join ordering** - selects optimal join execution plans
+- **Delta joins** - avoids intermediate state blowup in multi-way joins
+- **Index selection** - uses indexes for point lookups and range scans
+- **Filter pushdown** - applies filters as early as possible
+
+You can also provide **query hints** to help the optimizer:
+
+```sql
+SELECT DISTINCT ON(order_id) order_id, item, price
+FROM orders
+OPTIONS (DISTINCT ON INPUT GROUP SIZE = 100)
+ORDER BY order_id, price DESC;
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="SQL Views" icon="eye" href="/transform/sql-views">
+    Learn about regular views, indexes, and when to use each
+  </Card>
+  <Card title="Materialized Views" icon="database" href="/transform/materialized-views">
+    Deep dive into durable, cross-cluster materialized views
+  </Card>
+  <Card title="Joins" icon="link" href="/transform/joins">
+    Master multi-way joins, outer joins, and self-joins
+  </Card>
+  <Card title="Aggregations" icon="chart-column" href="/transform/aggregations">
+    Explore GROUP BY, HAVING, and window functions
+  </Card>
+</CardGroup>
+
+## Related resources
+
+- [Concepts: Views](/concepts/views)
+- [Concepts: Indexes](/concepts/indexes)
+- [SQL: SELECT](/sql/select)
+- [SQL: CREATE VIEW](/sql/create-view)
+- [SQL: CREATE MATERIALIZED VIEW](/sql/create-materialized-view)

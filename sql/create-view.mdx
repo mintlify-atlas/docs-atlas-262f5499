@@ -1,0 +1,313 @@
+---
+title: 'CREATE VIEW'
+description: 'Create non-materialized views as query aliases in Materialize'
+---
+
+## Overview
+
+CREATE VIEW defines a view that provides an alias for a SELECT statement. Views do not store results themselves—they are computed on-demand. To maintain results incrementally in memory, create an index on the view.
+
+## Syntax
+
+```sql
+CREATE [OR REPLACE] [TEMP | TEMPORARY] VIEW [IF NOT EXISTS] <view_name> AS
+  <select_query>;
+```
+
+## Key Concepts
+
+### Views as Query Aliases
+
+Views act as stored query definitions:
+
+```sql
+CREATE VIEW high_value_orders AS
+  SELECT * FROM orders WHERE amount > 1000;
+
+-- Equivalent to:
+SELECT * FROM orders WHERE amount > 1000;
+```
+
+Every time you query the view, Materialize executes the underlying SELECT statement.
+
+### Indexing Views for Incremental Maintenance
+
+To maintain view results in memory and update them incrementally:
+
+```sql
+CREATE VIEW user_totals AS
+  SELECT 
+    user_id,
+    COUNT(*) AS order_count,
+    SUM(amount) AS total_spent
+  FROM orders
+  GROUP BY user_id;
+
+-- Create index to maintain results in memory
+CREATE INDEX user_totals_idx ON user_totals (user_id);
+```
+
+With an index, the view results are:
+- Maintained incrementally as data changes
+- Stored in memory within the cluster
+- Available for fast queries
+
+### Cluster-Local Storage
+
+Indexed views are maintained in memory within a specific cluster:
+
+```sql
+SET cluster = analytics_cluster;
+CREATE VIEW metrics AS SELECT * FROM source;
+CREATE INDEX metrics_idx ON metrics (...);
+
+-- Index lives in analytics_cluster
+-- To query from another cluster, create another index there
+```
+
+## Parameters
+
+<ParamField path="view_name" type="identifier" required>
+  Name of the view to create
+</ParamField>
+
+<ParamField path="select_query" type="SELECT statement" required>
+  The query defining the view
+</ParamField>
+
+<ParamField path="OR REPLACE" type="keyword">
+  Replace an existing view with the same name. Cannot replace views that other views depend on.
+</ParamField>
+
+<ParamField path="TEMP | TEMPORARY" type="keyword">
+  Create a temporary view that exists only for the current session
+</ParamField>
+
+## Temporary Views
+
+Temporary views are session-scoped:
+
+```sql
+CREATE TEMP VIEW session_data AS
+  SELECT * FROM source WHERE session_id = current_session_id();
+
+-- View is automatically dropped when session ends
+```
+
+<Note>
+  Temporary views:
+  - Are created in the `mz_temp` schema
+  - Are automatically dropped at session end
+  - Cannot be referenced by non-temporary views
+  - Are not visible to other connections
+</Note>
+
+## Create or Replace
+
+Update a view definition in place:
+
+```sql
+CREATE VIEW sales_summary AS
+  SELECT product_id, SUM(amount) AS total
+  FROM orders
+  GROUP BY product_id;
+
+-- Later, update the definition
+CREATE OR REPLACE VIEW sales_summary AS
+  SELECT 
+    product_id, 
+    SUM(amount) AS total,
+    COUNT(*) AS order_count  -- Added new column
+  FROM orders
+  GROUP BY product_id;
+```
+
+<Warning>
+  You cannot use OR REPLACE if other views depend on this view, or to replace non-view objects.
+</Warning>
+
+## Examples
+
+### Basic View
+
+```sql
+CREATE VIEW active_users AS
+  SELECT *
+  FROM users
+  WHERE last_login > NOW() - INTERVAL '30 days';
+
+SELECT * FROM active_users;
+```
+
+### View with Joins
+
+```sql
+CREATE VIEW customer_orders AS
+  SELECT
+    c.customer_id,
+    c.name,
+    c.email,
+    o.order_id,
+    o.order_date,
+    o.amount
+  FROM customers c
+  JOIN orders o ON c.customer_id = o.customer_id;
+```
+
+### View with Aggregation
+
+```sql
+CREATE VIEW product_stats AS
+  SELECT
+    product_id,
+    COUNT(*) AS times_ordered,
+    SUM(quantity) AS total_quantity,
+    AVG(price) AS avg_price
+  FROM order_items
+  GROUP BY product_id;
+```
+
+### Indexed View for Fast Queries
+
+```sql
+-- Create view
+CREATE VIEW user_activity AS
+  SELECT
+    user_id,
+    COUNT(*) AS event_count,
+    MAX(event_time) AS last_activity
+  FROM events
+  GROUP BY user_id;
+
+-- Create index for fast lookups
+CREATE INDEX user_activity_idx ON user_activity (user_id);
+
+-- This query is now very fast
+SELECT * FROM user_activity WHERE user_id = 12345;
+```
+
+### View for JSON Parsing
+
+```sql
+CREATE SOURCE events_raw
+  FROM KAFKA CONNECTION kafka_conn (TOPIC 'events')
+  FORMAT JSON;
+
+CREATE VIEW events AS
+  SELECT
+    (data->>'event_id')::uuid AS event_id,
+    (data->>'user_id')::bigint AS user_id,
+    (data->>'event_type')::text AS event_type,
+    (data->>'timestamp')::timestamptz AS event_time
+  FROM events_raw;
+```
+
+### View with Window Functions
+
+```sql
+CREATE VIEW user_spending_rank AS
+  SELECT
+    user_id,
+    name,
+    total_spent,
+    RANK() OVER (ORDER BY total_spent DESC) AS spending_rank,
+    PERCENT_RANK() OVER (ORDER BY total_spent DESC) AS spending_percentile
+  FROM (
+    SELECT 
+      u.user_id,
+      u.name,
+      SUM(o.amount) AS total_spent
+    FROM users u
+    JOIN orders o ON u.user_id = o.user_id
+    GROUP BY u.user_id, u.name
+  );
+```
+
+### View with CTEs
+
+```sql
+CREATE VIEW regional_performance AS
+  WITH regional_totals AS (
+    SELECT
+      region_id,
+      SUM(amount) AS total_sales
+    FROM orders
+    GROUP BY region_id
+  ),
+  top_regions AS (
+    SELECT region_id
+    FROM regional_totals
+    ORDER BY total_sales DESC
+    LIMIT 5
+  )
+  SELECT
+    r.region_name,
+    rt.total_sales,
+    COUNT(DISTINCT o.customer_id) AS unique_customers
+  FROM regions r
+  JOIN regional_totals rt ON r.region_id = rt.region_id
+  JOIN orders o ON r.region_id = o.region_id
+  WHERE r.region_id IN (SELECT region_id FROM top_regions)
+  GROUP BY r.region_name, rt.total_sales;
+```
+
+## Views vs Materialized Views vs Indexes
+
+| Feature | View | View + Index | Materialized View |
+|---------|------|--------------|-------------------|
+| Storage | None | Memory (cluster-local) | Durable storage |
+| Computation | On-demand | Incremental | Incremental |
+| Cross-cluster | Yes | No | Yes |
+| Best for | Query aliases, transformations | Fast queries in one cluster | Shared results, sinks, large datasets |
+
+## When to Use Views
+
+**Use Views When:**
+- Creating query aliases for readability
+- Transforming or filtering data
+- Parsing JSON into structured columns
+- Building layered transformations
+- Results don't need to be precomputed
+
+**Use View + Index When:**
+- Queries need to be fast within a single cluster
+- Results fit in memory
+- You want incremental updates
+- Results don't need cross-cluster access
+
+**Use Materialized Views When:**
+- Results need to be shared across clusters
+- Feeding data to sinks
+- Results are larger than memory
+- Results need to survive cluster restarts
+
+## Best Practices
+
+1. **Layer Your Views**: Build complex transformations using multiple views
+   ```sql
+   CREATE VIEW stage1 AS SELECT ...;
+   CREATE VIEW stage2 AS SELECT ... FROM stage1;
+   CREATE VIEW final AS SELECT ... FROM stage2;
+   ```
+
+2. **Index for Performance**: Add indexes to views you query frequently
+   ```sql
+   CREATE INDEX ON my_view (filtered_column);
+   ```
+
+3. **Use for JSON Parsing**: Create views to parse JSON sources
+   ```sql
+   CREATE VIEW parsed AS
+     SELECT (data->>'field')::type FROM json_source;
+   ```
+
+4. **Keep Views Simple**: Complex views are harder to understand and debug
+
+5. **Consider Monotonicity**: Views can be recognized as append-only, which enables optimizations
+
+## Related Pages
+
+- [CREATE MATERIALIZED VIEW](/sql/create-materialized-view)
+- [CREATE INDEX](/sql/create-index)
+- [SELECT](/sql/select)
+- [DROP VIEW](/sql/drop-view)

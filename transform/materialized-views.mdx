@@ -1,0 +1,526 @@
+---
+title: 'Materialized Views'
+description: 'Learn how to create durable, incrementally-maintained materialized views in Materialize'
+---
+
+## What are materialized views?
+
+A **materialized view** in Materialize persists query results in **durable storage** and incrementally maintains them as source data changes. Unlike regular views, materialized views store actual data, not just query definitions.
+
+```sql
+CREATE MATERIALIZED VIEW regional_revenue AS
+SELECT 
+    region.id,
+    region.name,
+    COUNT(DISTINCT order_id) as order_count,
+    SUM(amount) as total_revenue
+FROM orders
+JOIN users ON orders.user_id = users.id
+JOIN regions ON users.region_id = regions.id
+GROUP BY region.id, region.name;
+```
+
+As new orders arrive, Materialize automatically and incrementally updates `regional_revenue` without recomputing the entire result set.
+
+## Why use materialized views?
+
+Materialized views are ideal when you need:
+
+### Cross-cluster access
+
+Materialized view results can be queried from **any cluster**, not just where they're maintained:
+
+```sql
+-- Maintain view on 'ingest_cluster'
+SET cluster = ingest_cluster;
+CREATE MATERIALIZED VIEW order_stats AS
+SELECT 
+    DATE_TRUNC('hour', created_at) as hour,
+    COUNT(*) as order_count,
+    SUM(amount) as total
+FROM orders
+GROUP BY hour;
+
+-- Query from 'analytics_cluster'
+SET cluster = analytics_cluster;
+SELECT * FROM order_stats WHERE hour >= NOW() - INTERVAL '24 hours';
+```
+
+The `ingest_cluster` maintains the view, while `analytics_cluster` queries it. This separates maintenance compute from query compute.
+
+### Durability
+
+Materialized views survive cluster restarts. Results are stored in durable object storage (e.g., S3), so even if a cluster is shut down and restarted, the data persists.
+
+### External sinks
+
+Only materialized views can be sinks to external systems:
+
+```sql
+CREATE MATERIALIZED VIEW user_activity_summary AS
+SELECT 
+    user_id,
+    COUNT(*) as action_count,
+    MAX(timestamp) as last_activity
+FROM user_actions
+GROUP BY user_id;
+
+-- Sink materialized view to Kafka
+CREATE SINK user_activity_sink
+FROM user_activity_summary
+INTO KAFKA CONNECTION kafka_conn
+TOPIC 'user-activity'
+FORMAT JSON;
+```
+
+### View stacking
+
+Materialized views can be built on top of other materialized views:
+
+```sql
+CREATE MATERIALIZED VIEW hourly_orders AS
+SELECT 
+    DATE_TRUNC('hour', created_at) as hour,
+    product_id,
+    COUNT(*) as order_count
+FROM orders
+GROUP BY hour, product_id;
+
+-- Stack another materialized view on top
+CREATE MATERIALIZED VIEW daily_product_trends AS
+SELECT 
+    DATE_TRUNC('day', hour) as day,
+    product_id,
+    SUM(order_count) as daily_orders
+FROM hourly_orders
+GROUP BY day, product_id;
+```
+
+## Creating materialized views
+
+### Basic syntax
+
+```sql
+CREATE MATERIALIZED VIEW view_name AS
+SELECT ...;
+```
+
+### Specifying a cluster
+
+Choose which cluster maintains the view:
+
+```sql
+CREATE MATERIALIZED VIEW order_summary 
+IN CLUSTER compute_cluster AS
+SELECT 
+    user_id,
+    COUNT(*) as order_count,
+    SUM(amount) as total_spent
+FROM orders
+GROUP BY user_id;
+```
+
+### Complex example: TPC-H Query
+
+Here's a real TPC-H query (Query 15) that demonstrates Materialize's ability to handle complex joins, subqueries, and aggregations:
+
+```sql
+-- Create TPC-H data source
+CREATE SOURCE tpch
+  FROM LOAD GENERATOR TPCH (SCALE FACTOR 1)
+  FOR ALL TABLES;
+
+-- Base view: Calculate supplier revenue
+CREATE VIEW revenue (supplier_no, total_revenue) AS
+    SELECT
+        l_suppkey,
+        SUM(l_extendedprice * (1 - l_discount))
+    FROM
+        lineitem
+    WHERE
+        l_shipdate >= DATE '1996-01-01'
+        AND l_shipdate < DATE '1996-01-01' + INTERVAL '3' month
+    GROUP BY
+        l_suppkey;
+
+-- Materialized view: Top revenue suppliers
+CREATE MATERIALIZED VIEW tpch_q15 AS
+  SELECT
+    s_suppkey,
+    s_name,
+    s_address,
+    s_phone,
+    total_revenue
+FROM
+    supplier,
+    revenue
+WHERE
+    s_suppkey = supplier_no
+    AND total_revenue = (
+        SELECT max(total_revenue)
+        FROM revenue
+    )
+ORDER BY
+    s_suppkey;
+```
+
+This query:
+- Filters line items by date range
+- Aggregates revenue per supplier
+- Joins supplier details
+- Finds suppliers with maximum revenue using a correlated subquery
+- Orders results
+
+Materialize maintains all of this incrementally as line items stream in.
+
+## Multi-way joins
+
+Materialize excels at maintaining complex multi-way joins incrementally:
+
+```sql
+CREATE MATERIALIZED VIEW order_enriched AS
+SELECT 
+    o.id as order_id,
+    o.created_at,
+    u.email as customer_email,
+    u.tier as customer_tier,
+    r.name as region,
+    p.name as product_name,
+    p.category,
+    oi.quantity,
+    oi.price,
+    (oi.quantity * oi.price) as line_total,
+    d.carrier as delivery_carrier,
+    d.status as delivery_status
+FROM orders o
+JOIN users u ON o.user_id = u.id
+JOIN regions r ON u.region_id = r.id
+JOIN order_items oi ON o.id = oi.order_id
+JOIN products p ON oi.product_id = p.id
+LEFT JOIN deliveries d ON o.id = d.order_id;
+```
+
+This 6-way join is maintained incrementally. When any table changes, only affected rows are recomputed.
+
+### Delta joins
+
+Materialize uses **delta joins** to avoid intermediate state blowup. Traditional streaming systems that only support nested binary joins can accumulate enormous intermediate state. Materialize's delta join implementation maintains minimal state even for joins of 64+ relations.
+
+## Aggregations in materialized views
+
+### Standard aggregations
+
+```sql
+CREATE MATERIALIZED VIEW product_metrics AS
+SELECT 
+    product_id,
+    COUNT(*) as sale_count,
+    SUM(quantity) as total_units,
+    SUM(quantity * price) as total_revenue,
+    AVG(quantity * price) as avg_sale_value,
+    MIN(price) as min_price,
+    MAX(price) as max_price,
+    STDDEV(quantity * price) as revenue_stddev
+FROM order_items
+GROUP BY product_id;
+```
+
+All aggregate functions update incrementally:
+- `COUNT`, `SUM` - simple increments/decrements
+- `AVG` - maintained as `SUM / COUNT`
+- `MIN`, `MAX` - efficiently tracked even with deletions
+- `STDDEV`, `VARIANCE` - maintained using running statistics
+
+### HAVING clause
+
+Filter aggregated results:
+
+```sql
+CREATE MATERIALIZED VIEW high_volume_products AS
+SELECT 
+    product_id,
+    COUNT(*) as order_count,
+    SUM(quantity) as total_units
+FROM order_items
+GROUP BY product_id
+HAVING COUNT(*) > 100 AND SUM(quantity) > 1000;
+```
+
+As orders arrive, products that cross the threshold appear in the view; products that fall below it are removed.
+
+### Filtered aggregates
+
+Apply filters to specific aggregate functions:
+
+```sql
+CREATE MATERIALIZED VIEW order_segments AS
+SELECT 
+    user_id,
+    COUNT(*) as total_orders,
+    COUNT(*) FILTER (WHERE amount > 100) as high_value_orders,
+    COUNT(*) FILTER (WHERE amount <= 100) as low_value_orders,
+    SUM(amount) as total_spent,
+    SUM(amount) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days') as last_30d_spent
+FROM orders
+GROUP BY user_id;
+```
+
+### Nested aggregations
+
+Use subqueries for multi-level aggregation:
+
+```sql
+CREATE MATERIALIZED VIEW category_statistics AS
+SELECT 
+    category,
+    COUNT(*) as product_count,
+    AVG(product_revenue) as avg_product_revenue,
+    MAX(product_revenue) as top_product_revenue
+FROM (
+    SELECT 
+        p.category,
+        p.id as product_id,
+        SUM(oi.quantity * oi.price) as product_revenue
+    FROM products p
+    JOIN order_items oi ON p.id = oi.product_id
+    GROUP BY p.category, p.id
+) product_totals
+GROUP BY category;
+```
+
+## Incremental maintenance explained
+
+### How it works
+
+Materialize uses **differential dataflow** to maintain views incrementally:
+
+1. **Data arrives** as inserts, updates (represented as delete + insert), or deletes
+2. **Changes flow through** the query dataflow as "diffs" (row + multiplicity)
+3. **Operators update** their state incrementally:
+   - Joins maintain indexes on join keys and process only matching diffs
+   - Aggregates update running totals, counts, etc.
+   - Filters pass through or drop diffs based on predicates
+4. **Results update** with only changed rows
+
+### Example: Order aggregation
+
+Consider this materialized view:
+
+```sql
+CREATE MATERIALIZED VIEW daily_revenue AS
+SELECT 
+    DATE_TRUNC('day', created_at) as day,
+    COUNT(*) as order_count,
+    SUM(amount) as total_revenue
+FROM orders
+GROUP BY day;
+```
+
+When a new order arrives:
+
+```sql
+INSERT INTO orders VALUES (101, '2024-03-15 10:30:00', 250.00, ...);
+```
+
+Materialize:
+1. Extracts the day: `2024-03-15`
+2. Looks up current state for that day: `(day='2024-03-15', count=150, sum=37500)`
+3. Applies the diff: `count += 1, sum += 250`
+4. Updates result: `(day='2024-03-15', count=151, sum=37750)`
+
+Only **one group** is updated, not the entire view. This is true even if the view has millions of rows across thousands of days.
+
+### Handling updates and deletes
+
+Materialize treats updates as delete + insert:
+
+```sql
+-- Update order amount
+UPDATE orders SET amount = 300.00 WHERE id = 101;
+```
+
+Internally:
+1. Delete: `(day='2024-03-15', -1, -250.00)`
+2. Insert: `(day='2024-03-15', +1, +300.00)`
+3. Net change: `(day='2024-03-15', count=151, sum=37800)`
+
+Deletes work similarly:
+
+```sql
+DELETE FROM orders WHERE id = 101;
+```
+
+Applies: `(day='2024-03-15', -1, -300.00)`
+
+Result: `(day='2024-03-15', count=150, sum=37500)`
+
+## Indexing materialized views
+
+While materialized views store results in durable storage, you may want to index them for faster in-memory queries:
+
+```sql
+CREATE MATERIALIZED VIEW product_sales AS
+SELECT 
+    product_id,
+    COUNT(*) as sale_count,
+    SUM(quantity) as total_quantity,
+    SUM(amount) as total_revenue
+FROM order_items
+GROUP BY product_id;
+
+-- Create index for fast point lookups
+CREATE INDEX product_sales_idx ON product_sales(product_id);
+```
+
+Indexes on materialized views are **local to the cluster** where they're created:
+
+```sql
+-- Create index in analytics cluster
+SET cluster = analytics_cluster;
+CREATE INDEX product_sales_analytics_idx ON product_sales(product_id);
+
+-- Create separate index in reporting cluster
+SET cluster = reporting_cluster;
+CREATE INDEX product_sales_reporting_idx ON product_sales(product_id);
+```
+
+Each cluster maintains its own in-memory copy of the results.
+
+## Non-null assertions
+
+Sometimes Materialize cannot infer that a column is non-null, even when your query logic guarantees it. Use `ASSERT NOT NULL` to help:
+
+```sql
+CREATE MATERIALIZED VIEW users_with_orders 
+WITH (ASSERT NOT NULL user_id) AS
+SELECT 
+    COALESCE(users.id, orders.user_id) AS user_id,
+    users.name,
+    COUNT(orders.id) as order_count
+FROM users 
+FULL OUTER JOIN orders ON users.id = orders.user_id
+GROUP BY user_id, users.name;
+```
+
+The `FULL OUTER JOIN` guarantees that either `users.id` or `orders.user_id` is non-null, so `COALESCE` always returns a value. The assertion tells Materialize that `user_id` cannot be null.
+
+<Warning>
+  If you assert that a column is non-null incorrectly, and a null value is produced, queries will return an error until the offending row is deleted.
+</Warning>
+
+## Refresh strategies
+
+By default, materialized views use **incremental maintenance** (`REFRESH ON COMMIT`) — they update continuously as data arrives.
+
+For specific use cases like batch reporting over historical data, you can configure **scheduled refreshes**:
+
+### Refresh at specific times
+
+```sql
+CREATE MATERIALIZED VIEW monthly_report
+IN CLUSTER scheduled_cluster
+WITH (
+  REFRESH AT CREATION,
+  REFRESH AT '2024-04-01 00:00:00',
+  REFRESH AT '2024-05-01 00:00:00'
+)
+AS SELECT 
+    DATE_TRUNC('month', created_at) as month,
+    COUNT(*) as order_count,
+    SUM(amount) as revenue
+FROM orders
+GROUP BY month;
+```
+
+### Refresh at regular intervals
+
+```sql
+CREATE MATERIALIZED VIEW daily_summary
+IN CLUSTER scheduled_cluster
+WITH (
+  REFRESH AT CREATION,
+  REFRESH EVERY '1 day' ALIGNED TO '2024-01-01 00:00:00'
+)
+AS SELECT 
+    DATE_TRUNC('day', created_at) as day,
+    COUNT(*) as order_count
+FROM orders
+GROUP BY day;
+```
+
+<Note>
+  Views with refresh strategies require **scheduled clusters** that automatically turn on before refresh times. Use this feature sparingly — incremental maintenance is recommended for most use cases.
+</Note>
+
+## Example: Real-time analytics pipeline
+
+Here's a complete example building a multi-layer analytics pipeline:
+
+```sql
+-- Layer 1: Enrich raw events
+CREATE MATERIALIZED VIEW events_enriched AS
+SELECT 
+    e.id as event_id,
+    e.user_id,
+    e.event_type,
+    e.timestamp,
+    u.email,
+    u.signup_date,
+    u.tier,
+    s.utm_source,
+    s.utm_campaign
+FROM events e
+JOIN users u ON e.user_id = u.id
+LEFT JOIN sessions s ON e.session_id = s.id;
+
+-- Layer 2: Hourly aggregates
+CREATE MATERIALIZED VIEW events_hourly AS
+SELECT 
+    DATE_TRUNC('hour', timestamp) as hour,
+    event_type,
+    tier,
+    utm_source,
+    COUNT(*) as event_count,
+    COUNT(DISTINCT user_id) as unique_users
+FROM events_enriched
+GROUP BY hour, event_type, tier, utm_source;
+
+-- Layer 3: Campaign performance
+CREATE MATERIALIZED VIEW campaign_performance AS
+SELECT 
+    utm_source,
+    SUM(CASE WHEN event_type = 'signup' THEN event_count ELSE 0 END) as signups,
+    SUM(CASE WHEN event_type = 'purchase' THEN event_count ELSE 0 END) as purchases,
+    SUM(CASE WHEN event_type = 'purchase' THEN event_count ELSE 0 END)::float / 
+        NULLIF(SUM(CASE WHEN event_type = 'signup' THEN event_count ELSE 0 END), 0) as conversion_rate
+FROM events_hourly
+WHERE utm_source IS NOT NULL
+GROUP BY utm_source;
+
+-- Create indexes for fast queries
+CREATE INDEX events_hourly_time_idx ON events_hourly(hour);
+CREATE INDEX campaign_perf_idx ON campaign_performance(utm_source);
+```
+
+Query examples:
+
+```sql
+-- Recent hourly trends
+SELECT * FROM events_hourly 
+WHERE hour >= NOW() - INTERVAL '24 hours'
+ORDER BY hour DESC;
+
+-- Top campaigns
+SELECT * FROM campaign_performance 
+ORDER BY conversion_rate DESC 
+LIMIT 10;
+```
+
+All views update incrementally as events stream in. Layer 3 builds on Layer 2, which builds on Layer 1, creating a reusable hierarchy.
+
+## Related resources
+
+- [CREATE MATERIALIZED VIEW](/sql/create-materialized-view)
+- [ALTER MATERIALIZED VIEW](/sql/alter-materialized-view)
+- [Concepts: Views](/concepts/views)
+- [Query Optimization](/transform/optimization)

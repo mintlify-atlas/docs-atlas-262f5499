@@ -1,0 +1,393 @@
+---
+title: String Functions
+description: SQL functions for manipulating and analyzing text data
+---
+
+Materialize provides a comprehensive set of string functions for text manipulation, pattern matching, and analysis.
+
+## String Concatenation
+
+### Concatenation Operator (||)
+
+Concatenate strings using the `||` operator:
+
+```sql
+SELECT 'Hello' || ' ' || 'World' AS greeting;
+-- Result: Hello World
+
+SELECT first_name || ' ' || last_name AS full_name
+FROM users;
+```
+
+### CONCAT Function
+
+Concatenate multiple values, treating NULL as empty string:
+
+```sql
+SELECT CONCAT(first_name, ' ', middle_name, ' ', last_name) AS full_name
+FROM users;
+-- NULL values are treated as empty strings
+```
+
+## Case Conversion
+
+### UPPER
+
+Convert a string to uppercase:
+
+```sql
+SELECT UPPER('hello world') AS upper_text;
+-- Result: HELLO WORLD
+
+SELECT UPPER(email) FROM users;
+```
+
+### LOWER
+
+Convert a string to lowercase:
+
+```sql
+SELECT LOWER('HELLO WORLD') AS lower_text;
+-- Result: hello world
+
+SELECT LOWER(product_name) FROM products;
+```
+
+## Substring and Extraction
+
+### SUBSTRING
+
+Extract a substring from a string.
+
+**Signatures:**
+```sql
+substring(str, start_pos)
+substring(str, start_pos, length)
+substring(str FROM start_pos)
+substring(str FOR length)
+substring(str FROM start_pos FOR length)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `str` | `text` | The source string |
+| `start_pos` | `int` | Starting position (1-indexed) |
+| `length` | `int` | Number of characters to extract |
+
+**Return Type:** `text`
+
+**Examples:**
+```sql
+SELECT substring('abcdefg', 3) AS substr;
+-- Result: cdefg
+
+SELECT substring('abcdefg', 3, 3) AS substr;
+-- Result: cde
+
+SELECT substring(email FROM '@(.*)' FOR '#') AS domain
+FROM users;
+```
+
+## String Length
+
+### LENGTH
+
+Return the number of characters (code points) in a string.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `str` | `text` or `bytea` | The string to measure |
+| `encoding_name` | `text` | Optional encoding (defaults to UTF-8) |
+
+**Return Type:** `int`
+
+**Examples:**
+```sql
+SELECT length('hello') AS len;
+-- Result: 5
+
+SELECT length('你好') AS len;
+-- Result: 2
+
+SELECT length('你好', 'big5') AS len;
+-- Result: 3
+```
+
+### Character vs Byte Length
+
+```sql
+-- Character length (code points)
+SELECT length('hello') AS char_len;
+-- Result: 5
+
+-- Byte length
+SELECT octet_length('hello') AS byte_len;
+-- Result: 5
+
+SELECT length('你好') AS char_len, octet_length('你好') AS byte_len;
+-- char_len: 2, byte_len: 6
+```
+
+## String Trimming
+
+### TRIM, LTRIM, RTRIM
+
+Remove leading and/or trailing characters:
+
+```sql
+-- Remove spaces from both ends
+SELECT trim('  hello  ') AS trimmed;
+-- Result: hello
+
+-- Remove from left (leading)
+SELECT ltrim('  hello  ') AS left_trimmed;
+-- Result: 'hello  '
+
+-- Remove from right (trailing)
+SELECT rtrim('  hello  ') AS right_trimmed;
+-- Result: '  hello'
+
+-- Remove specific characters
+SELECT trim(BOTH 'x' FROM 'xxxhelloxxx') AS trimmed;
+-- Result: hello
+```
+
+## Pattern Matching
+
+### LIKE and ILIKE
+
+Pattern matching with wildcards:
+
+- `%` matches any sequence of characters
+- `_` matches any single character
+
+```sql
+-- Case-sensitive LIKE
+SELECT * FROM products
+WHERE name LIKE 'Apple%';
+
+-- Case-insensitive ILIKE
+SELECT * FROM products
+WHERE name ILIKE '%apple%';
+
+-- Escape special characters
+SELECT * FROM files
+WHERE filename LIKE '%\_%' ESCAPE '\\';
+```
+
+**Operators:**
+- `LIKE` / `~~`: Case-sensitive matching
+- `ILIKE` / `~~*`: Case-insensitive matching
+- `NOT LIKE` / `!~~`: Negated case-sensitive
+- `NOT ILIKE` / `!~~*`: Negated case-insensitive
+
+### Regular Expressions
+
+Materialize supports regular expressions using Rust `regex` crate syntax.
+
+**Operators:**
+- `~`: Case-sensitive regex match
+- `~*`: Case-insensitive regex match
+- `!~`: Case-sensitive regex non-match
+- `!~*`: Case-insensitive regex non-match
+
+**Examples:**
+```sql
+-- Match email addresses
+SELECT * FROM users
+WHERE email ~ '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$';
+
+-- Case-insensitive match
+SELECT * FROM products
+WHERE description ~* 'organic|natural';
+
+-- Extract with regex (requires regex functions)
+SELECT regexp_match(text, 'pattern') FROM logs;
+```
+
+<Note>
+Materialize regular expressions follow Rust regex syntax, which is similar to but not identical to PostgreSQL regex syntax.
+</Note>
+
+**Limitations:**
+- Maximum regex size: 1 MiB raw, 10 MiB compiled
+- No backreferences
+- No look-ahead or look-behind assertions
+
+## String Replacement
+
+### REPLACE
+
+Replace all occurrences of a substring:
+
+```sql
+SELECT replace('Hello World', 'World', 'Universe') AS replaced;
+-- Result: Hello Universe
+
+SELECT replace(description, 'old_term', 'new_term')
+FROM articles;
+```
+
+### TRANSLATE
+
+Replace characters based on a mapping:
+
+```sql
+SELECT translate('hello', 'el', 'ip') AS translated;
+-- Result: hippo
+-- 'e' -> 'i', 'l' -> 'p'
+```
+
+## String Positioning
+
+### POSITION
+
+Find the position of a substring:
+
+```sql
+SELECT position('World' IN 'Hello World') AS pos;
+-- Result: 7 (1-indexed)
+
+SELECT position('@' IN email) AS at_position
+FROM users;
+```
+
+### STRPOS
+
+Alternative syntax for finding substring position:
+
+```sql
+SELECT strpos('Hello World', 'World') AS pos;
+-- Result: 7
+```
+
+## String Splitting and Parsing
+
+### SPLIT_PART
+
+Split a string and return a specific part:
+
+```sql
+SELECT split_part('one,two,three', ',', 2) AS part;
+-- Result: two
+
+SELECT 
+    split_part(email, '@', 1) AS username,
+    split_part(email, '@', 2) AS domain
+FROM users;
+```
+
+### REGEXP_SPLIT_TO_ARRAY
+
+Split a string into an array using a regex pattern:
+
+```sql
+SELECT regexp_split_to_array('one,two,,three', ',+') AS parts;
+-- Result: ['one', 'two', 'three']
+```
+
+## Unicode Normalization
+
+### normalize
+
+Convert a string to a specified Unicode normalization form.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `str` | `text` | The string to normalize |
+| `form` | keyword | Normalization form: `NFC`, `NFD`, `NFKC`, or `NFKD` (default: `NFC`) |
+
+**Return Type:** `text`
+
+**Normalization Forms:**
+- **NFC**: Canonical Composition (default, most common)
+- **NFD**: Canonical Decomposition
+- **NFKC**: Compatibility Composition
+- **NFKD**: Compatibility Decomposition
+
+**Examples:**
+```sql
+-- Default NFC normalization
+SELECT normalize('café') AS normalized;
+
+-- Explicit NFD form
+SELECT normalize('café', NFD) AS normalized;
+
+-- Compatibility composition
+SELECT normalize('①②③', NFKC) AS normalized;
+-- Converts special number forms to standard digits
+```
+
+## Encoding and Decoding
+
+### ENCODE and DECODE
+
+Convert between binary data and text representations:
+
+```sql
+-- Encode binary data as base64
+SELECT encode('hello'::bytea, 'base64') AS encoded;
+-- Result: aGVsbG8=
+
+-- Decode base64 to binary
+SELECT decode('aGVsbG8=', 'base64')::text AS decoded;
+-- Result: hello
+```
+
+**Supported formats:**
+- `base64`
+- `hex`
+- `escape`
+
+## String Operators
+
+| Operator | Description | Example |
+|----------|-------------|----------|
+| `\|\|` | Concatenation | `'Hello' \|\| ' World'` |
+| `~` | Regex match (case-sensitive) | `text ~ 'pattern'` |
+| `~*` | Regex match (case-insensitive) | `text ~* 'pattern'` |
+| `!~` | Regex non-match (case-sensitive) | `text !~ 'pattern'` |
+| `!~*` | Regex non-match (case-insensitive) | `text !~* 'pattern'` |
+| `~~` | LIKE (case-sensitive) | `text ~~ 'pat%'` |
+| `~~*` | ILIKE (case-insensitive) | `text ~~* 'pat%'` |
+| `!~~` | NOT LIKE | `text !~~ 'pat%'` |
+| `!~~*` | NOT ILIKE | `text !~~* 'pat%'` |
+
+## Common String Patterns
+
+### Email Validation
+
+```sql
+SELECT email
+FROM users
+WHERE email ~ '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$';
+```
+
+### URL Parsing
+
+```sql
+SELECT 
+    url,
+    split_part(url, '://', 1) AS protocol,
+    split_part(split_part(url, '://', 2), '/', 1) AS domain,
+    substring(url FROM position('://' IN url) + 3) AS path
+FROM links;
+```
+
+### Name Formatting
+
+```sql
+SELECT 
+    UPPER(substring(first_name, 1, 1)) || 
+    LOWER(substring(first_name, 2)) || ' ' ||
+    UPPER(substring(last_name, 1, 1)) || 
+    LOWER(substring(last_name, 2)) AS formatted_name
+FROM users;
+```
+
+## Related Resources
+
+- [String Operators](/sql/functions/overview#string-operators)
+- [Text Data Type](/sql/types/text)
+- [Regular Expressions](/sql/functions/overview#string-operators)
+- [Pattern Matching](/sql/select#where)

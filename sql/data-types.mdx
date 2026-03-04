@@ -1,0 +1,346 @@
+---
+title: 'Data Types'
+description: 'Reference for SQL data types supported in Materialize'
+---
+
+## Introduction
+
+Materialize supports a comprehensive set of SQL data types for storing and manipulating data. The type system is PostgreSQL-compatible and includes both built-in types and support for custom types.
+
+## Built-in Types
+
+### Numeric Types
+
+#### Integer Types
+
+<ParamField path="smallint" type="int2">
+  Small signed integer (2 bytes). Range: -32,768 to 32,767.
+  
+  ```sql
+  SELECT 42::smallint;
+  ```
+</ParamField>
+
+<ParamField path="integer" type="int, int4">
+  Standard signed integer (4 bytes). Range: -2,147,483,648 to 2,147,483,647.
+  
+  ```sql
+  SELECT 123::integer;
+  ```
+</ParamField>
+
+<ParamField path="bigint" type="int8">
+  Large signed integer (8 bytes). Range: -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807.
+  
+  ```sql
+  SELECT 9223372036854775807::bigint;
+  ```
+</ParamField>
+
+#### Unsigned Integer Types
+
+<ParamField path="uint2">
+  Small unsigned integer (2 bytes). Range: 0 to 65,535.
+</ParamField>
+
+<ParamField path="uint4">
+  Unsigned integer (4 bytes). Range: 0 to 4,294,967,295.
+</ParamField>
+
+<ParamField path="uint8">
+  Large unsigned integer (8 bytes). Range: 0 to 18,446,744,073,709,551,615.
+</ParamField>
+
+#### Floating-Point Types
+
+<ParamField path="real" type="float4">
+  Single precision floating-point (4 bytes). Precision: 6 decimal digits.
+  
+  ```sql
+  SELECT 1.23::real;
+  ```
+</ParamField>
+
+<ParamField path="double precision" type="float, float8, double">
+  Double precision floating-point (8 bytes). Precision: 15 decimal digits.
+  
+  ```sql
+  SELECT 1.234567890123456::double precision;
+  ```
+</ParamField>
+
+#### Exact Numeric Type
+
+<ParamField path="numeric" type="decimal">
+  Exact numeric with user-defined precision and scale (16 bytes). Supports arbitrary precision.
+  
+  ```sql
+  SELECT 12345.6789::numeric(10, 4);
+  ```
+</ParamField>
+
+### Text Types
+
+<ParamField path="text" type="string">
+  Variable-length Unicode string. No length limit.
+  
+  ```sql
+  SELECT 'Hello, Materialize!'::text;
+  ```
+</ParamField>
+
+<ParamField path="varchar" type="character varying">
+  Variable-length string with optional length limit.
+  
+  ```sql
+  SELECT 'example'::varchar(100);
+  ```
+</ParamField>
+
+<ParamField path="char" type="character">
+  Fixed-length string, blank-padded.
+  
+  ```sql
+  SELECT 'abc'::char(5); -- Results in 'abc  '
+  ```
+</ParamField>
+
+### Binary Type
+
+<ParamField path="bytea">
+  Variable-length binary string. Used for storing raw bytes.
+  
+  ```sql
+  SELECT '\\xDEADBEEF'::bytea;
+  ```
+</ParamField>
+
+### Boolean Type
+
+<ParamField path="boolean" type="bool">
+  Logical boolean value: `TRUE` or `FALSE`.
+  
+  ```sql
+  SELECT TRUE, FALSE;
+  SELECT 't'::boolean, 'f'::boolean;
+  ```
+</ParamField>
+
+### Date/Time Types
+
+<ParamField path="date">
+  Calendar date (year, month, day) without time. 4 bytes.
+  
+  ```sql
+  SELECT DATE '2024-03-15';
+  SELECT '2024-03-15'::date;
+  ```
+</ParamField>
+
+<ParamField path="time">
+  Time of day (no date, no timezone). 4 bytes.
+  
+  ```sql
+  SELECT TIME '14:30:00';
+  SELECT '14:30:00'::time;
+  ```
+</ParamField>
+
+<ParamField path="timestamp">
+  Date and time without timezone. 8 bytes.
+  
+  ```sql
+  SELECT TIMESTAMP '2024-03-15 14:30:00';
+  ```
+</ParamField>
+
+<ParamField path="timestamp with time zone" type="timestamptz">
+  Date and time with timezone. 8 bytes.
+  
+  ```sql
+  SELECT TIMESTAMPTZ '2024-03-15 14:30:00+00';
+  SELECT '2024-03-15 14:30:00 UTC'::timestamptz;
+  ```
+</ParamField>
+
+<ParamField path="interval">
+  Time span or duration. 32 bytes.
+  
+  ```sql
+  SELECT INTERVAL '1 day 2 hours 30 minutes';
+  SELECT INTERVAL '1-2 3 4:5:6.7'; -- 1 year, 2 months, 3 days, 4:05:06.7
+  ```
+</ParamField>
+
+### JSON Type
+
+<ParamField path="jsonb" type="json">
+  Binary JSON data. Supports indexing and querying JSON documents.
+  
+  ```sql
+  SELECT '{"name": "Alice", "age": 30}'::jsonb;
+  SELECT data->>'name' FROM json_table;
+  ```
+</ParamField>
+
+### UUID Type
+
+<ParamField path="uuid">
+  Universally Unique Identifier. 16 bytes.
+  
+  ```sql
+  SELECT 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid;
+  ```
+</ParamField>
+
+### OID Type
+
+<ParamField path="oid">
+  PostgreSQL object identifier. 4 bytes. Used internally for system catalogs.
+  
+  ```sql
+  SELECT 123::oid;
+  ```
+</ParamField>
+
+### Collection Types
+
+#### Arrays
+
+<ParamField path="array">
+  Multidimensional array of any data type.
+  
+  ```sql
+  SELECT ARRAY[1, 2, 3, 4];
+  SELECT '{1, 2, 3}'::integer[];
+  SELECT ARRAY[[1, 2], [3, 4]] AS matrix;
+  ```
+</ParamField>
+
+#### Lists
+
+<ParamField path="list">
+  Variable-length multidimensional list. Similar to arrays but with different semantics.
+  
+  ```sql
+  SELECT LIST[1, 2, 3];
+  SELECT LIST[[1, 2], [3]];
+  ```
+</ParamField>
+
+#### Maps
+
+<ParamField path="map">
+  Key-value map with text keys and uniform value type.
+  
+  ```sql
+  SELECT '{"a" => 1, "b" => 2}'::map[text=>int];
+  ```
+</ParamField>
+
+#### Records
+
+<ParamField path="record">
+  Tuple with arbitrary contents. Useful for composite types.
+  
+  ```sql
+  SELECT ROW(1, 'text', TRUE);
+  ```
+</ParamField>
+
+## Custom Types
+
+You can create custom types using `CREATE TYPE`:
+
+```sql
+-- Create a custom list type
+CREATE TYPE int_list AS LIST (ELEMENT TYPE int4);
+
+-- Create a custom map type
+CREATE TYPE string_map AS MAP (KEY TYPE text, VALUE TYPE text);
+
+-- Use the custom type
+SELECT '{1, 2, 3}'::int_list;
+```
+
+## Type Casting
+
+Materialize supports explicit and implicit type casting:
+
+```sql
+-- Explicit cast using ::
+SELECT '123'::integer;
+SELECT 123::text;
+
+-- Explicit cast using CAST()
+SELECT CAST('123' AS integer);
+SELECT CAST(123 AS text);
+
+-- Implicit casting (automatic)
+SELECT 1 + 2.5; -- integer + numeric -> numeric
+```
+
+## Type Compatibility
+
+When working with different types:
+
+- Numeric types can generally be cast between each other
+- Text types are interchangeable
+- Date/time types can be cast between compatible types
+- Arrays, lists, and maps require compatible element types
+- Custom types can be cast to their underlying built-in types
+
+## NULL Values
+
+All types can be nullable unless explicitly marked as `NOT NULL`:
+
+```sql
+CREATE TABLE users (
+  id integer NOT NULL,
+  email text NOT NULL,
+  nickname text  -- nullable
+);
+```
+
+## Type Sizing
+
+Some types have fixed sizes, while others are variable:
+
+| Type Category | Storage |
+|---------------|----------|
+| `smallint` | 2 bytes |
+| `integer` | 4 bytes |
+| `bigint` | 8 bytes |
+| `real` | 4 bytes |
+| `double precision` | 8 bytes |
+| `numeric` | 16 bytes |
+| `text` | Variable |
+| `bytea` | Variable |
+| `date` | 4 bytes |
+| `timestamp` | 8 bytes |
+| `uuid` | 16 bytes |
+| `jsonb` | Variable |
+
+## Working with JSON
+
+JSONB supports powerful querying operators:
+
+```sql
+-- Extract field
+SELECT data->>'name' FROM users;
+
+-- Navigate nested objects
+SELECT data->'address'->>'city' FROM users;
+
+-- Check existence
+SELECT data ? 'email' FROM users;
+
+-- Array operations
+SELECT data->'tags'->0 FROM posts;
+```
+
+## Related Pages
+
+- [CREATE TABLE](/sql/create-table)
+- [CREATE TYPE](/sql/create-type)
+- [Type Functions](/sql/functions/types)

@@ -1,0 +1,382 @@
+---
+title: Cluster Operations
+description: Learn how to create, configure, and manage clusters in Materialize for optimal resource isolation and workload performance.
+---
+
+## Overview
+
+Clusters are pools of compute resources (CPU, memory, and scratch disk space) for running your workloads in Materialize. This guide covers operational best practices for creating, sizing, and managing clusters in production environments.
+
+## Creating Clusters
+
+### Basic Cluster Creation
+
+Create a cluster with the `CREATE CLUSTER` command:
+
+```sql
+CREATE CLUSTER production (
+  SIZE = 'M.1-large',
+  REPLICATION FACTOR = 2
+);
+```
+
+This creates a cluster named `production` with:
+- Two replicas for fault tolerance
+- `M.1-large` size for each replica
+- Automatic distribution across availability zones
+
+### Initial State
+
+Each Materialize region includes a pre-installed cluster named `quickstart` with:
+- Size: `25cc`
+- Replication factor: `1`
+
+You can drop or alter this cluster to suit your needs.
+
+### Setting Active Cluster
+
+To view or change your session's active cluster:
+
+```sql
+-- Show current cluster
+SHOW cluster;
+
+-- Switch to a different cluster
+SET cluster = production;
+```
+
+## Cluster Sizing
+
+### Available Sizes
+
+Materialize offers M.1 cluster sizes optimized for performance per credit:
+
+- `M.1-xsmall` - Development and testing
+- `M.1-small` - Light production workloads
+- `M.1-medium` - Standard production workloads
+- `M.1-large` - Heavy production workloads
+- `M.1-xlarge` and larger - Enterprise-scale workloads
+
+### Choosing the Right Size
+
+The appropriate cluster size depends on:
+
+- **Data volume**: Larger datasets require more memory
+- **Query complexity**: Complex joins and aggregations need more CPU
+- **Throughput requirements**: Higher event rates demand more resources
+- **Hydration costs**: Consider both initial hydration and steady-state memory
+
+### Monitoring Cluster Utilization
+
+Query cluster resource usage:
+
+```sql
+SELECT 
+  c.name AS cluster_name,
+  r.name AS replica_name,
+  m.process_id,
+  m.cpu_nano_cores / 1000000000.0 AS cpu_cores,
+  m.memory_bytes / (1024.0 * 1024.0 * 1024.0) AS memory_gb,
+  m.disk_bytes / (1024.0 * 1024.0 * 1024.0) AS disk_gb
+FROM mz_internal.mz_cluster_replica_metrics m
+JOIN mz_cluster_replicas r ON m.replica_id = r.id
+JOIN mz_clusters c ON r.cluster_id = c.id
+ORDER BY c.name, r.name, m.process_id;
+```
+
+### Resizing Clusters
+
+Change cluster size to respond to workload changes:
+
+```sql
+-- Scale up for increased load
+ALTER CLUSTER production SET (SIZE = 'M.1-xlarge');
+
+-- Scale down during low-traffic periods
+ALTER CLUSTER development SET (SIZE = 'M.1-small');
+```
+
+**Note**: Resizing may incur brief downtime depending on the objects hosted on the cluster.
+
+## Replication Factor
+
+### Fault Tolerance
+
+The replication factor determines the number of replicas:
+
+```sql
+-- High availability with 3 replicas
+CREATE CLUSTER critical (
+  SIZE = 'M.1-medium',
+  REPLICATION FACTOR = 3
+);
+```
+
+**Key points**:
+- Each replica performs identical work on identical data
+- Replicas are distributed across availability zones
+- Higher replication improves fault tolerance, not capacity
+- To increase capacity, increase the SIZE, not replication factor
+
+### Pausing Clusters
+
+Set replication factor to 0 to pause work:
+
+```sql
+-- Pause cluster (stop consuming credits)
+ALTER CLUSTER development SET (REPLICATION FACTOR = 0);
+
+-- Resume cluster
+ALTER CLUSTER development SET (REPLICATION FACTOR = 1);
+```
+
+Paused clusters:
+- Consume no credits
+- Stop processing sources, sinks, and materialized views
+- Block all queries directed to the cluster
+
+### Checking Replica Status
+
+View cluster replicas and their configuration:
+
+```sql
+SELECT 
+  c.name AS cluster_name,
+  c.managed,
+  c.size,
+  c.replication_factor,
+  r.name AS replica_name,
+  r.availability_zone,
+  r.disk
+FROM mz_clusters c
+LEFT JOIN mz_cluster_replicas r ON c.id = r.cluster_id
+ORDER BY c.name, r.name;
+```
+
+## Workload Isolation
+
+### Resource Isolation Principles
+
+Clusters provide strict resource isolation:
+- Each cluster has dedicated CPU, memory, and disk
+- Workloads on different clusters don't interfere
+- Workloads on the same cluster compete for resources
+
+### Three-Tier Architecture
+
+For production environments, use separate clusters for:
+
+1. **Ingestion cluster**: Sources and data ingestion
+2. **Transformation cluster**: Materialized views and compute
+3. **Serving cluster**: Ad-hoc queries and subscriptions
+
+```sql
+-- Ingestion layer
+CREATE CLUSTER ingestion (
+  SIZE = 'M.1-medium',
+  REPLICATION FACTOR = 2
+);
+
+-- Transformation layer
+CREATE CLUSTER transformation (
+  SIZE = 'M.1-large',
+  REPLICATION FACTOR = 2
+);
+
+-- Serving layer
+CREATE CLUSTER serving (
+  SIZE = 'M.1-medium',
+  REPLICATION FACTOR = 2
+);
+```
+
+### Environment Separation
+
+Isolate development from production:
+
+```sql
+-- Development cluster
+CREATE CLUSTER dev (
+  SIZE = 'M.1-small',
+  REPLICATION FACTOR = 1
+);
+
+-- Production cluster
+CREATE CLUSTER prod (
+  SIZE = 'M.1-large',
+  REPLICATION FACTOR = 2
+);
+```
+
+**Best practice**: Use production clusters for production workloads only. Avoid running development or testing tasks on production clusters.
+
+## Scheduled Clusters
+
+For materialized views with scheduled refreshes, configure automatic cluster scheduling:
+
+```sql
+CREATE CLUSTER scheduled_reports (
+  SIZE = 'M.1-large',
+  SCHEDULE = ON REFRESH (
+    HYDRATION TIME ESTIMATE = '1 hour'
+  )
+);
+```
+
+Scheduled clusters:
+- Turn on automatically for refresh operations
+- Only consume credits during refresh periods
+- Should only contain materialized views with non-default refresh strategies
+
+### Checking Schedule Status
+
+Query cluster schedule configuration:
+
+```sql
+SELECT 
+  c.id AS cluster_id,
+  c.name AS cluster_name,
+  cs.type AS schedule_type,
+  cs.refresh_hydration_time_estimate,
+  CASE WHEN cr.id IS NOT NULL THEN true ELSE false END AS is_on
+FROM mz_internal.mz_cluster_schedules cs
+JOIN mz_clusters c ON cs.cluster_id = c.id
+LEFT JOIN mz_cluster_replicas cr ON c.id = cr.cluster_id
+WHERE cs.type = 'on-refresh';
+```
+
+## Credit Usage
+
+Each replica consumes credits based on size:
+
+| Size | Credits/Hour |
+|------|-------------|
+| M.1-xsmall | 1 |
+| M.1-small | 2 |
+| M.1-medium | 4 |
+| M.1-large | 8 |
+| M.1-xlarge | 16 |
+
+**Example calculation**:
+```sql
+-- Cluster with SIZE='M.1-medium' and REPLICATION FACTOR=2
+-- Consumes: 4 credits/hour × 2 replicas = 8 credits/hour
+```
+
+Credit usage is measured at one-second granularity and begins when replicas are provisioned.
+
+## Operational Queries
+
+### List All Clusters
+
+```sql
+SELECT 
+  name,
+  managed,
+  size,
+  replication_factor,
+  disk
+FROM mz_clusters
+ORDER BY name;
+```
+
+### Find Clusters by Size
+
+```sql
+SELECT 
+  name,
+  size,
+  replication_factor
+FROM mz_clusters
+WHERE size = 'M.1-large'
+ORDER BY name;
+```
+
+### Identify Objects on a Cluster
+
+```sql
+SELECT 
+  'materialized view' AS object_type,
+  mv.name AS object_name,
+  c.name AS cluster_name
+FROM mz_materialized_views mv
+JOIN mz_clusters c ON mv.cluster_id = c.id
+
+UNION ALL
+
+SELECT 
+  'index' AS object_type,
+  i.name AS object_name,
+  c.name AS cluster_name
+FROM mz_indexes i
+JOIN mz_clusters c ON i.cluster_id = c.id
+
+ORDER BY cluster_name, object_type, object_name;
+```
+
+## Best Practices
+
+### Production Guidelines
+
+1. **Use three-tier architecture**: Separate ingestion, transformation, and serving
+2. **Production workloads only**: Don't mix dev and prod on the same cluster
+3. **Right-size clusters**: Monitor utilization and adjust as needed
+4. **Enable fault tolerance**: Use replication factor ≥ 2 for critical workloads
+5. **Consider hydration costs**: Account for both initial and steady-state memory
+
+### Performance Optimization
+
+1. **Isolate heavy workloads**: Put resource-intensive operations on dedicated clusters
+2. **Use scheduled clusters**: For periodic batch workloads to reduce costs
+3. **Monitor lag**: Track cluster replica frontiers to detect processing delays
+4. **Separate sources from sinks**: Allows for blue/green deployments
+
+### Cost Management
+
+1. **Pause unused clusters**: Set replication factor to 0 when not needed
+2. **Use appropriate sizes**: Start small and scale up based on actual usage
+3. **Review regularly**: Audit cluster usage monthly to identify optimization opportunities
+
+## Troubleshooting
+
+### High Memory Usage
+
+```sql
+-- Find replicas with high memory usage
+SELECT 
+  c.name AS cluster_name,
+  r.name AS replica_name,
+  m.memory_bytes / (1024.0 * 1024.0 * 1024.0) AS memory_gb,
+  sizes.memory_bytes / (1024.0 * 1024.0 * 1024.0) AS limit_gb
+FROM mz_internal.mz_cluster_replica_metrics m
+JOIN mz_cluster_replicas r ON m.replica_id = r.id
+JOIN mz_clusters c ON r.cluster_id = c.id
+JOIN mz_cluster_replica_sizes sizes ON r.size = sizes.size
+WHERE m.memory_bytes > sizes.memory_bytes * 0.8
+ORDER BY m.memory_bytes DESC;
+```
+
+**Resolution**: Consider resizing the cluster or optimizing materialized views/indexes.
+
+### Cluster Not Processing
+
+Check if cluster has active replicas:
+
+```sql
+SELECT 
+  c.name AS cluster_name,
+  c.replication_factor,
+  COUNT(r.id) AS active_replicas
+FROM mz_clusters c
+LEFT JOIN mz_cluster_replicas r ON c.id = r.cluster_id
+GROUP BY c.name, c.replication_factor
+HAVING c.replication_factor > 0 AND COUNT(r.id) = 0;
+```
+
+**Resolution**: If no active replicas exist, alter the cluster to provision them.
+
+## Related Topics
+
+- [Index Operations](/operations/indexes)
+- [Performance Tuning](/operations/performance)
+- [Monitoring Guide](/operations/monitoring)

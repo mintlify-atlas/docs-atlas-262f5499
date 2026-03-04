@@ -1,0 +1,793 @@
+---
+title: "Configuration Reference"
+description: "Complete reference for configuring self-managed Materialize deployments."
+---
+
+## Overview
+
+This page provides a comprehensive reference for configuring self-managed Materialize deployments, including Helm chart values, environment variables, and command-line arguments.
+
+## Helm Chart Configuration
+
+The Materialize Operator Helm chart is configured via `values.yaml`. This section documents all available parameters.
+
+### Operator Configuration
+
+#### Image Settings
+
+```yaml
+operator:
+  image:
+    # Docker repository for the operator image
+    repository: materialize/orchestratord
+    # Image tag/version
+    tag: v26.13.0
+    # Pull policy: Always, IfNotPresent, Never
+    pullPolicy: IfNotPresent
+```
+
+#### Cloud Provider Settings
+
+```yaml
+operator:
+  cloudProvider:
+    # Cloud provider type: aws, gcp, azure, local, generic
+    type: "aws"
+    # Deployment region
+    region: "us-east-1"
+    
+    providers:
+      # AWS-specific configuration
+      aws:
+        enabled: true
+        accountID: "123456789012"
+        iam:
+          roles:
+            # IAM role ARN for environmentd
+            environment: "arn:aws:iam::123456789012:role/materialize-env"
+            # IAM role ARN for CREATE CONNECTION
+            connection: "arn:aws:iam::123456789012:role/materialize-conn"
+      
+      # GCP-specific configuration (placeholder)
+      gcp:
+        enabled: false
+        # Future: Add GCP-specific settings
+      
+      # Azure-specific configuration (placeholder)
+      azure:
+        enabled: false
+        # Future: Add Azure-specific settings
+```
+
+#### Cluster Size Configuration
+
+```yaml
+operator:
+  clusters:
+    # Enable swap memory for clusters
+    swap_enabled: true
+    
+    # Predefined cluster sizes (compute credits)
+    sizes:
+      mz_probe:
+        workers: 1
+        scale: 1
+        cpu_exclusive: false
+        cpu_limit: 0.1
+        credits_per_hour: "0.00"
+        disk_limit: "1552MiB"
+        memory_limit: "776MiB"
+      
+      25cc:
+        workers: 1
+        scale: 1
+        cpu_exclusive: false
+        cpu_limit: 0.5
+        credits_per_hour: "0.25"
+        disk_limit: "7762MiB"
+        memory_limit: "3881MiB"
+      
+      50cc:
+        workers: 1
+        scale: 1
+        cpu_exclusive: true
+        cpu_limit: 1
+        credits_per_hour: "0.5"
+        disk_limit: "15525MiB"
+        memory_limit: "7762MiB"
+      
+      100cc:
+        workers: 2
+        scale: 1
+        cpu_exclusive: true
+        cpu_limit: 2
+        credits_per_hour: "1"
+        disk_limit: "31050MiB"
+        memory_limit: "15525MiB"
+      
+      # ... additional sizes: 200cc, 400cc, 800cc, 1600cc, 3200cc, 6400cc
+    
+    # Default sizes for system clusters
+    defaultSizes:
+      default: 25cc
+      system: 25cc
+      probe: mz_probe
+      support: 25cc
+      catalogServer: 25cc
+      analytics: 25cc
+    
+    # Default replication factors
+    defaultReplicationFactor:
+      system: 0
+      probe: 0
+      support: 0
+      analytics: 0
+```
+
+#### Secrets Management
+
+```yaml
+operator:
+  # Secrets controller type: kubernetes, aws-secrets-manager
+  secretsController: kubernetes
+```
+
+- **kubernetes**: Store secrets in Kubernetes Secret objects
+- **aws-secrets-manager**: Store secrets in AWS Secrets Manager (requires AWS IAM configuration)
+
+#### Resource Allocation
+
+```yaml
+operator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+  
+  # Node affinity for operator pod
+  affinity: {}
+  
+  # Node selector for operator pod
+  nodeSelector: {}
+  
+  # Tolerations for operator pod
+  tolerations: []
+```
+
+#### Logging Configuration
+
+```yaml
+operator:
+  args:
+    # Log filter for startup logs
+    startupLogFilter: "INFO,mz_orchestratord=TRACE"
+    # Enable internal statement logging
+    enableInternalStatementLogging: true
+    # Enable license key validation
+    enableLicenseKeyChecks: false
+```
+
+### Component Configuration
+
+#### environmentd (SQL Layer)
+
+```yaml
+environmentd:
+  # Default resources if not specified in Materialize CR
+  defaultResources:
+    requests:
+      cpu: "1"
+      # Slightly less than limit to enable swap
+      memory: "4095Mi"
+    limits:
+      memory: "4Gi"
+  
+  # Node selector
+  nodeSelector: {}
+  
+  # Affinity rules
+  affinity: {}
+  
+  # Tolerations
+  tolerations: []
+```
+
+#### clusterd (Compute Workers)
+
+```yaml
+clusterd:
+  # Base node selector for all clusterd pods
+  nodeSelector: {}
+  
+  # Additional selector for pods using LVM scratch disk
+  scratchfsNodeSelector:
+    materialize.cloud/scratch-fs: "true"
+  
+  # Additional selector for pods using swap
+  swapNodeSelector:
+    materialize.cloud/swap: "true"
+  
+  # Affinity rules
+  affinity: {}
+  
+  # Tolerations
+  tolerations: []
+```
+
+#### balancerd (Load Balancer)
+
+```yaml
+balancerd:
+  # Enable balancerd deployment
+  enabled: true
+  
+  # Default resources
+  defaultResources:
+    requests:
+      cpu: "500m"
+      memory: "256Mi"
+    limits:
+      memory: "256Mi"
+  
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+```
+
+#### console (Web UI)
+
+```yaml
+console:
+  # Enable console deployment
+  enabled: true
+  
+  # Override version mapping (environmentd -> console)
+  imageTagMapOverride: {}
+  
+  # Default resources
+  defaultResources:
+    requests:
+      cpu: "500m"
+      memory: "256Mi"
+    limits:
+      memory: "256Mi"
+  
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+```
+
+### Storage Configuration
+
+```yaml
+storage:
+  storageClass:
+    # Create new StorageClass or use existing
+    create: true
+    
+    # StorageClass name
+    name: "openebs-lvm-instance-store-ext4"
+    
+    # CSI driver/provisioner
+    provisioner: "local.csi.openebs.io"
+    
+    # Driver-specific parameters
+    parameters:
+      storage: "lvm"
+      fsType: "ext4"
+      volgroup: "instance-store-vg"
+    
+    # Allow volume expansion
+    allowVolumeExpansion: false
+    
+    # Reclaim policy: Delete, Retain
+    reclaimPolicy: Delete
+    
+    # Volume binding mode
+    volumeBindingMode: WaitForFirstConsumer
+```
+
+### Network Configuration
+
+#### Network Policies
+
+```yaml
+networkPolicies:
+  # Enable network policies
+  enabled: false
+  
+  # Internal pod-to-pod communication
+  internal:
+    enabled: false
+  
+  # Ingress to SQL/HTTP interfaces
+  ingress:
+    enabled: false
+    # Allowed source CIDR blocks
+    cidrs:
+      - 0.0.0.0/0
+  
+  # Egress to sources and sinks
+  egress:
+    enabled: false
+    # Allowed destination CIDR blocks
+    cidrs:
+      - 0.0.0.0/0
+```
+
+#### TLS Configuration
+
+```yaml
+tls:
+  defaultCertificateSpecs:
+    # External balancerd certificate
+    balancerdExternal:
+      dnsNames:
+        - balancerd.example.com
+      issuerRef:
+        name: letsencrypt-prod
+        kind: ClusterIssuer
+    
+    # External console certificate
+    consoleExternal:
+      dnsNames:
+        - console.example.com
+      issuerRef:
+        name: letsencrypt-prod
+        kind: ClusterIssuer
+    
+    # Internal communication certificate
+    internal:
+      issuerRef:
+        name: internal-ca
+        kind: Issuer
+```
+
+### Observability
+
+```yaml
+observability:
+  # Enable observability features
+  enabled: true
+  
+  # Prometheus integration
+  prometheus:
+    scrapeAnnotations:
+      # Add Prometheus scrape annotations to pods
+      enabled: true
+  
+  # Pod metrics collection (requires metrics-server)
+  podMetrics:
+    enabled: false
+```
+
+### RBAC Configuration
+
+```yaml
+rbac:
+  # Create ClusterRole and ClusterRoleBinding
+  create: true
+
+serviceAccount:
+  # Create ServiceAccount
+  create: true
+  # ServiceAccount name
+  name: "orchestratord"
+```
+
+### Telemetry
+
+```yaml
+telemetry:
+  enabled: true
+  segmentApiKey: "hMWi3sZ17KFMjn2sPWo9UJGpOQqiba4A"
+  segmentClientSide: true
+```
+
+### Advanced Settings
+
+```yaml
+# Custom Kubernetes scheduler
+schedulerName: null
+
+# Additional CRD columns for kubectl output
+operator:
+  additionalMaterializeCRDColumns: {}
+    # Example:
+    # - description: "Environment context"
+    #   jsonPath: ".metadata.annotations['materialize.cloud/context']"
+    #   name: "Context"
+    #   priority: 2
+    #   type: "string"
+```
+
+## Materialize Custom Resource
+
+### Basic Configuration
+
+```yaml
+apiVersion: materialize.cloud/v1alpha1
+kind: Materialize
+metadata:
+  # Environment ID (UUID format)
+  name: 12345678-1234-1234-1234-123456789012
+  namespace: materialize-environment
+  # Optional labels
+  labels:
+    environment: production
+    team: data-platform
+  # Optional annotations
+  annotations:
+    description: "Production Materialize environment"
+spec:
+  # Materialize version
+  environmentdImageRef: materialize/environmentd:v26.13.0
+  
+  # Backend configuration secret
+  backendSecretName: materialize-backend
+  
+  # Authentication mode
+  authenticatorKind: None  # Options: None, Frontegg
+```
+
+### Resource Configuration
+
+```yaml
+spec:
+  # environmentd resources
+  environmentdResourceRequirements:
+    requests:
+      cpu: "2"
+      memory: "16Gi"
+    limits:
+      memory: "16Gi"
+  
+  # balancerd resources
+  balancerdResourceRequirements:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      memory: "256Mi"
+```
+
+### Rollout Configuration
+
+```yaml
+spec:
+  # Rollout strategy
+  rolloutStrategy: WaitUntilReady
+  # Options:
+  # - WaitUntilReady: Zero-downtime upgrade (requires extra capacity)
+  # - ImmediatelyPromoteCausingDowntime: Immediate upgrade (causes downtime)
+  
+  # Trigger rollout (change UUID to trigger)
+  requestRollout: "22222222-2222-2222-2222-222222222222"
+  
+  # Force rollout even without changes
+  forceRollout: "33333333-3333-3333-3333-333333333333"
+```
+
+### TLS Configuration
+
+```yaml
+spec:
+  # External balancerd certificate
+  balancerdExternalCertificateSpec:
+    dnsNames:
+      - balancerd.example.com
+    issuerRef:
+      name: letsencrypt-prod
+      kind: ClusterIssuer
+  
+  # External console certificate
+  consoleExternalCertificateSpec:
+    dnsNames:
+      - console.example.com
+    issuerRef:
+      name: letsencrypt-prod
+      kind: ClusterIssuer
+  
+  # Internal communication certificate
+  internalCertificateSpec:
+    issuerRef:
+      name: internal-ca
+      kind: Issuer
+```
+
+## Backend Secret Configuration
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: materialize-backend
+  namespace: materialize-environment
+type: Opaque
+stringData:
+  # PostgreSQL metadata backend
+  metadata_backend_url: "postgres://user:password@host:5432/database?sslmode=require"
+  
+  # S3 persistence backend
+  persist_backend_url: "s3://bucket/prefix?endpoint=https://s3.region.amazonaws.com&region=region"
+  
+  # License key
+  license_key: "your-license-key-here"
+```
+
+### Backend URL Formats
+
+#### PostgreSQL/CockroachDB
+
+```
+postgres://user:password@host:port/database?options
+```
+
+Common options:
+- `sslmode=require` - Require SSL/TLS
+- `sslmode=disable` - Disable SSL/TLS (testing only)
+- `options=--search_path=adapter` - Set schema search path
+
+#### S3 Backend
+
+```
+s3://access_key:secret_key@bucket/prefix?endpoint=URL&region=REGION
+```
+
+Parameters:
+- `endpoint` - S3 endpoint URL (URL-encoded)
+- `region` - AWS region or custom region name
+- Credentials in URL or via IAM role
+
+#### MinIO (Testing)
+
+```
+s3://minio:minio123@bucket/prefix?endpoint=http%3A%2F%2Fminio.namespace.svc.cluster.local%3A9000&region=minio
+```
+
+## Environment Variables
+
+### environmentd Container
+
+Environment variables for the `environmentd` container:
+
+```yaml
+env:
+  # Environment ID (required)
+  - name: MZ_ENVIRONMENT_ID
+    value: "12345678-1234-1234-1234-123456789012"
+  
+  # Hostname (auto-set in Kubernetes)
+  - name: HOSTNAME
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
+  
+  # Soft assertions for debugging
+  - name: MZ_SOFT_ASSERTIONS
+    value: "1"
+  
+  # Log filtering
+  - name: MZ_LOG_FILTER
+    value: "info,mz=debug"
+  
+  # Unsafe mode (development only)
+  - name: UNSAFE_MODE
+    value: "false"
+  
+  # Disable fsync (DANGEROUS - testing only)
+  # - name: LD_PRELOAD
+  #   value: libeatmydata.so
+```
+
+### Logging Configuration
+
+Log filter syntax:
+
+```bash
+# Log level hierarchy: error, warn, info, debug, trace
+
+# Global level
+MZ_LOG_FILTER="info"
+
+# Per-module levels
+MZ_LOG_FILTER="info,mz_adapter=debug,mz_compute=trace"
+
+# Multiple modules
+MZ_LOG_FILTER="warn,mz_orchestratord=info,mz_storage=debug"
+```
+
+## Command-Line Arguments
+
+### environmentd Arguments
+
+Key command-line arguments for `environmentd`:
+
+```bash
+# Listener configuration
+--listeners-config-path=/etc/materialize/listeners.json
+
+# Backend URLs
+--metadata-backend-url=postgres://...
+--persist-backend-url=s3://...
+
+# Orchestrator configuration
+--orchestrator=kubernetes  # Options: kubernetes, process
+--orchestrator-kubernetes-image-pull-policy=IfNotPresent
+
+# Network configuration
+--internal-persist-pubsub-listen-addr=127.0.0.1:6879
+--cors-allowed-origin=*
+
+# HTTP proxy (for egress)
+--internal-http-proxy=http://proxy.example.com:8080
+
+# Bootstrap arguments
+--bootstrap-default-cluster-replica-size=25cc
+--bootstrap-builtin-system-cluster-replica-size=25cc
+
+# License validation
+--license-key=<key>
+
+# Feature flags
+--all-features  # Enable all feature flags (development)
+
+# Unsafe mode (development)
+--unsafe-mode
+```
+
+### Orchestrator-Specific Arguments
+
+#### Kubernetes Orchestrator
+
+```bash
+--orchestrator=kubernetes
+--orchestrator-kubernetes-service-account=orchestratord
+--orchestrator-kubernetes-image-pull-policy=IfNotPresent
+```
+
+#### Process Orchestrator (Docker/Local)
+
+```bash
+--orchestrator=process
+--orchestrator-process-tcp-proxy-listen-addr=0.0.0.0:6877
+--orchestrator-process-prometheus-service-discovery-directory=/mzdata/prometheus
+```
+
+## Performance Tuning
+
+### Worker Threads
+
+Configure worker threads based on CPU allocation:
+
+```bash
+# Auto-detect (default)
+--workers=0
+
+# Explicit count
+--workers=4
+```
+
+Rule of thumb: Set to number of CPU cores allocated.
+
+### Memory Configuration
+
+Memory limits affect materialized view capacity:
+
+```yaml
+resources:
+  limits:
+    # Memory for environmentd
+    memory: "32Gi"
+```
+
+Recommended ratios:
+- environmentd: 1:8 CPU to memory (1 core = 8 GiB)
+- clusterd: Based on cluster size configuration
+
+### Storage Performance
+
+For optimal performance:
+
+- Use local NVMe storage (not network-attached)
+- Configure appropriate volume size
+- Use ext4 filesystem for LVM volumes
+- Enable swap for memory overflow
+
+## Security Configuration
+
+### Authentication
+
+```yaml
+spec:
+  # No authentication (development only)
+  authenticatorKind: None
+  
+  # Frontegg SSO (production)
+  authenticatorKind: Frontegg
+```
+
+### Network Policies
+
+Restrict network access:
+
+```yaml
+networkPolicies:
+  enabled: true
+  ingress:
+    enabled: true
+    cidrs:
+      - 10.0.0.0/8  # Internal network only
+  egress:
+    enabled: true
+    cidrs:
+      - 0.0.0.0/0  # Allow all egress
+```
+
+### Secrets Management
+
+For production, use external secrets management:
+
+```yaml
+operator:
+  secretsController: aws-secrets-manager
+  cloudProvider:
+    providers:
+      aws:
+        enabled: true
+        iam:
+          roles:
+            environment: "arn:aws:iam::ACCOUNT:role/materialize-secrets"
+```
+
+## Monitoring Configuration
+
+### Prometheus Scraping
+
+Enable Prometheus metrics:
+
+```yaml
+observability:
+  prometheus:
+    scrapeAnnotations:
+      enabled: true
+```
+
+This adds annotations:
+```yaml
+annotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "6876"
+  prometheus.io/path: "/metrics"
+```
+
+### Metrics Server
+
+For pod metrics in the console:
+
+```yaml
+observability:
+  podMetrics:
+    enabled: true
+```
+
+Requires Kubernetes metrics-server to be installed.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Kubernetes Deployment" icon="dharmachakra" href="/deployment/self-managed/kubernetes">
+    Deploy using these configuration options
+  </Card>
+  <Card title="Operational Guidelines" icon="book" href="/manage/operational-guidelines">
+    Best practices for production operations
+  </Card>
+  <Card title="Monitoring Setup" icon="chart-line" href="/manage/monitoring">
+    Configure comprehensive monitoring
+  </Card>
+  <Card title="Security Best Practices" icon="shield" href="/security/overview">
+    Secure your deployment
+  </Card>
+</CardGroup>

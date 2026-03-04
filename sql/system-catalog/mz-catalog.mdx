@@ -1,0 +1,710 @@
+---
+title: "mz_catalog Schema"
+description: "Complete reference for Materialize's native system catalog schema."
+---
+
+## Overview
+
+The `mz_catalog` schema exposes metadata about your Materialize instance in its native format. This is the recommended interface for querying system metadata, as it provides the most accurate and complete representation of Materialize objects.
+
+All tables and views in `mz_catalog` are automatically available in every database without any special configuration.
+
+<Warning>
+Views that reference `mz_catalog` tables cannot use `SELECT *` or `NATURAL JOIN`. You must explicitly list all columns and use `USING` joins instead.
+</Warning>
+
+## Core Object Tables
+
+### mz_databases
+
+Contains one row for each database in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Materialize's unique ID for the database |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `name` | `text` | The name of the database |
+| `owner_id` | `text` | The role ID of the owner |
+| `privileges` | `mz_aclitem[]` | Access control privileges |
+
+**Example:**
+```sql
+-- List all databases and their owners
+SELECT 
+  d.name AS database_name,
+  r.name AS owner_name
+FROM mz_catalog.mz_databases d
+JOIN mz_catalog.mz_roles r ON d.owner_id = r.id;
+```
+
+### mz_schemas
+
+Contains one row for each schema in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Materialize's unique ID for the schema |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `database_id` | `text` | The ID of the containing database |
+| `name` | `text` | The name of the schema |
+| `owner_id` | `text` | The role ID of the owner |
+| `privileges` | `mz_aclitem[]` | Access control privileges |
+
+**Example:**
+```sql
+-- List all schemas in the current database
+SELECT 
+  s.name AS schema_name,
+  d.name AS database_name
+FROM mz_catalog.mz_schemas s
+JOIN mz_catalog.mz_databases d ON s.database_id = d.id;
+```
+
+### mz_objects
+
+Unified view containing one row for each table, source, view, materialized view, sink, index, connection, secret, type, and function in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Materialize's unique ID |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `schema_id` | `text` | The ID of the containing schema |
+| `name` | `text` | The name of the object |
+| `type` | `text` | Object type: `table`, `source`, `view`, `materialized-view`, `sink`, `index`, `connection`, `secret`, `type`, or `function` |
+| `owner_id` | `text` | The role ID of the owner |
+| `cluster_id` | `text` | The cluster ID (for sources, MVs, indexes, sinks) |
+| `privileges` | `mz_aclitem[]` | Access control privileges |
+
+**Example:**
+```sql
+-- List all objects in the public schema
+SELECT name, type 
+FROM mz_catalog.mz_objects
+WHERE schema_id = (SELECT id FROM mz_catalog.mz_schemas WHERE name = 'public')
+ORDER BY type, name;
+```
+
+## Sources
+
+### mz_sources
+
+Contains one row for each source in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the source |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `schema_id` | `text` | The ID of the containing schema |
+| `name` | `text` | The name of the source |
+| `type` | `text` | Source type: `kafka`, `mysql`, `postgres`, `load-generator`, `progress`, or `subsource` |
+| `connection_id` | `text` | The ID of the associated connection |
+| `size` | `text` | The size of the source (deprecated) |
+| `envelope_type` | `text` | For Kafka sources: `none`, `upsert`, or `debezium` |
+| `key_format` | `text` | For Kafka sources: message key format |
+| `value_format` | `text` | For Kafka sources: message value format |
+| `cluster_id` | `text` | The cluster maintaining the source |
+| `owner_id` | `text` | The role ID of the owner |
+| `privileges` | `mz_aclitem[]` | Access control privileges |
+| `create_sql` | `text` | The CREATE statement |
+| `redacted_create_sql` | `text` | CREATE statement with secrets redacted |
+
+**Example:**
+```sql
+-- List all Kafka sources with their topics
+SELECT 
+  s.name AS source_name,
+  s.type,
+  ks.topic,
+  c.name AS cluster_name
+FROM mz_catalog.mz_sources s
+JOIN mz_catalog.mz_kafka_sources ks ON s.id = ks.id
+JOIN mz_catalog.mz_clusters c ON s.cluster_id = c.id
+WHERE s.type = 'kafka';
+```
+
+### mz_kafka_sources
+
+Contains details specific to Kafka sources.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | The ID of the Kafka source |
+| `group_id_prefix` | `text` | The consumer group ID prefix |
+| `topic` | `text` | The Kafka topic name |
+
+**Example:**
+```sql
+-- Monitor Kafka source lag
+SELECT
+  s.name,
+  ks.topic,
+  st.offset_known - st.offset_committed AS lag
+FROM mz_catalog.mz_sources s
+JOIN mz_catalog.mz_kafka_sources ks ON s.id = ks.id
+JOIN mz_internal.mz_source_statistics st ON s.id = st.id
+WHERE st.snapshot_committed;
+```
+
+## Views and Materialized Views
+
+### mz_views
+
+Contains one row for each view in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the view |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `schema_id` | `text` | The ID of the containing schema |
+| `name` | `text` | The name of the view |
+| `definition` | `text` | The view's SELECT query |
+| `owner_id` | `text` | The role ID of the owner |
+| `privileges` | `mz_aclitem[]` | Access control privileges |
+| `create_sql` | `text` | The CREATE statement |
+| `redacted_create_sql` | `text` | CREATE statement with secrets redacted |
+
+**Example:**
+```sql
+-- Find views that query a specific source
+SELECT v.name, v.definition
+FROM mz_catalog.mz_views v
+WHERE v.definition LIKE '%my_source%';
+```
+
+### mz_materialized_views
+
+Contains one row for each materialized view in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the materialized view |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `schema_id` | `text` | The ID of the containing schema |
+| `name` | `text` | The name of the materialized view |
+| `cluster_id` | `text` | The cluster maintaining the MV |
+| `definition` | `text` | The MV's SELECT query |
+| `owner_id` | `text` | The role ID of the owner |
+| `privileges` | `mz_aclitem[]` | Access control privileges |
+| `create_sql` | `text` | The CREATE statement |
+| `redacted_create_sql` | `text` | CREATE statement with secrets redacted |
+
+**Example:**
+```sql
+-- List materialized views with their storage usage
+SELECT 
+  mv.name,
+  c.name AS cluster_name,
+  u.size_bytes / (1024 * 1024) AS size_mb
+FROM mz_catalog.mz_materialized_views mv
+JOIN mz_catalog.mz_clusters c ON mv.cluster_id = c.id
+JOIN mz_catalog.mz_recent_storage_usage u ON mv.id = u.object_id
+ORDER BY u.size_bytes DESC;
+```
+
+## Indexes
+
+### mz_indexes
+
+Contains one row for each index in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the index |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `name` | `text` | The name of the index |
+| `on_id` | `text` | The ID of the relation being indexed |
+| `cluster_id` | `text` | The cluster maintaining the index |
+| `owner_id` | `text` | The role ID of the owner |
+| `create_sql` | `text` | The CREATE INDEX statement |
+| `redacted_create_sql` | `text` | CREATE statement with secrets redacted |
+
+**Example:**
+```sql
+-- List all indexes and what they index
+SELECT 
+  i.name AS index_name,
+  o.name AS indexed_object,
+  o.type AS object_type,
+  c.name AS cluster_name
+FROM mz_catalog.mz_indexes i
+JOIN mz_catalog.mz_objects o ON i.on_id = o.id
+JOIN mz_catalog.mz_clusters c ON i.cluster_id = c.id;
+```
+
+### mz_index_columns
+
+Contains one row for each column in each index.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `index_id` | `text` | The ID of the index |
+| `index_position` | `uint8` | Position within the index (1-based) |
+| `on_position` | `uint8` | Position in the indexed relation (1-based) |
+| `on_expression` | `text` | SQL expression for computed columns |
+| `nullable` | `boolean` | Whether the column can be NULL |
+
+**Example:**
+```sql
+-- Show index structure
+SELECT 
+  i.name AS index_name,
+  ic.index_position,
+  COALESCE(
+    c.name,
+    ic.on_expression
+  ) AS column_def
+FROM mz_catalog.mz_indexes i
+JOIN mz_catalog.mz_index_columns ic ON i.id = ic.index_id
+LEFT JOIN mz_catalog.mz_columns c 
+  ON i.on_id = c.id 
+  AND ic.on_position = c.position
+WHERE i.name = 'my_index'
+ORDER BY ic.index_position;
+```
+
+## Clusters
+
+### mz_clusters
+
+Contains one row for each cluster in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the cluster |
+| `name` | `text` | The name of the cluster |
+| `owner_id` | `text` | The role ID of the owner |
+| `privileges` | `mz_aclitem[]` | Access control privileges |
+| `managed` | `boolean` | Whether the cluster is managed |
+| `size` | `text` | For managed clusters: replica size |
+| `replication_factor` | `uint4` | For managed clusters: number of replicas |
+| `disk` | `boolean` | Whether replicas have local disk |
+| `availability_zones` | `text[]` | List of availability zones |
+| `introspection_debugging` | `boolean` | Whether introspection debugging is enabled |
+| `introspection_interval` | `interval` | Introspection collection interval |
+
+**Example:**
+```sql
+-- List all clusters with their configuration
+SELECT 
+  name,
+  managed,
+  size,
+  replication_factor
+FROM mz_catalog.mz_clusters
+ORDER BY name;
+```
+
+### mz_cluster_replicas
+
+Contains one row for each cluster replica.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the replica |
+| `name` | `text` | The name of the replica |
+| `cluster_id` | `text` | The ID of the parent cluster |
+| `size` | `text` | The replica's size |
+| `availability_zone` | `text` | The AZ where the replica runs |
+| `owner_id` | `text` | The role ID of the owner |
+| `disk` | `boolean` | Whether the replica has local disk |
+
+**Example:**
+```sql
+-- Show cluster topology
+SELECT 
+  c.name AS cluster,
+  r.name AS replica,
+  r.size,
+  r.availability_zone
+FROM mz_catalog.mz_clusters c
+JOIN mz_catalog.mz_cluster_replicas r ON c.id = r.cluster_id
+ORDER BY c.name, r.name;
+```
+
+### mz_cluster_replica_sizes
+
+Contains the mapping between logical sizes (e.g., `100cc`) and physical resources.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `size` | `text` | The human-readable size |
+| `processes` | `uint8` | Number of processes |
+| `workers` | `uint8` | Number of workers per process |
+| `cpu_nano_cores` | `uint8` | CPU allocation per process |
+| `memory_bytes` | `uint8` | RAM allocation per process |
+| `disk_bytes` | `uint8` | Disk allocation per process |
+| `credits_per_hour` | `numeric` | Compute credits consumed per hour |
+
+<Warning>
+The values in this table may change at any time. Do not rely on them for capacity planning.
+</Warning>
+
+**Example:**
+```sql
+-- Calculate cluster costs
+SELECT 
+  c.name AS cluster,
+  c.replication_factor,
+  s.size,
+  s.credits_per_hour,
+  s.credits_per_hour * c.replication_factor AS total_credits_per_hour
+FROM mz_catalog.mz_clusters c
+JOIN mz_catalog.mz_cluster_replica_sizes s ON c.size = s.size
+WHERE c.managed;
+```
+
+## Sinks
+
+### mz_sinks
+
+Contains one row for each sink in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the sink |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `schema_id` | `text` | The ID of the containing schema |
+| `name` | `text` | The name of the sink |
+| `type` | `text` | The sink type: `kafka` |
+| `connection_id` | `text` | The ID of the connection |
+| `size` | `text` | The sink's size |
+| `envelope_type` | `text` | Envelope: `upsert` or `debezium` |
+| `format` | `text` | Message format (deprecated) |
+| `key_format` | `text` | Key format: `avro`, `json`, `bytes`, `text` |
+| `value_format` | `text` | Value format: `avro`, `json`, `text`, `bytes` |
+| `cluster_id` | `text` | The cluster maintaining the sink |
+| `owner_id` | `text` | The role ID of the owner |
+| `create_sql` | `text` | The CREATE SINK statement |
+| `redacted_create_sql` | `text` | CREATE statement with secrets redacted |
+
+**Example:**
+```sql
+-- List all sinks and their destinations
+SELECT 
+  s.name AS sink_name,
+  ks.topic AS kafka_topic,
+  c.name AS cluster_name
+FROM mz_catalog.mz_sinks s
+JOIN mz_catalog.mz_kafka_sinks ks ON s.id = ks.id
+JOIN mz_catalog.mz_clusters c ON s.cluster_id = c.id;
+```
+
+## Tables and Columns
+
+### mz_tables
+
+Contains one row for each table in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the table |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `schema_id` | `text` | The ID of the containing schema |
+| `name` | `text` | The name of the table |
+| `owner_id` | `text` | The role ID of the owner |
+| `privileges` | `mz_aclitem[]` | Access control privileges |
+| `create_sql` | `text` | The CREATE TABLE statement |
+| `redacted_create_sql` | `text` | CREATE statement with secrets redacted |
+| `source_id` | `text` | Associated source ID, if any |
+
+### mz_columns
+
+Contains one row for each column in each table, source, and view.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | The ID of the containing relation |
+| `name` | `text` | The name of the column |
+| `position` | `uint8` | Position in the relation (1-based) |
+| `nullable` | `boolean` | Whether the column can be NULL |
+| `type` | `text` | The data type of the column |
+| `default` | `text` | Default value expression |
+| `type_oid` | `oid` | The OID of the column's type |
+| `type_mod` | `integer` | Type modifier |
+
+**Example:**
+```sql
+-- Show table schema
+SELECT 
+  c.name AS column_name,
+  c.type AS data_type,
+  c.nullable,
+  c.default
+FROM mz_catalog.mz_columns c
+JOIN mz_catalog.mz_tables t ON c.id = t.id
+WHERE t.name = 'my_table'
+ORDER BY c.position;
+```
+
+## Connections and Secrets
+
+### mz_connections
+
+Contains one row for each connection in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the connection |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `schema_id` | `text` | The ID of the containing schema |
+| `name` | `text` | The name of the connection |
+| `type` | `text` | Connection type: `confluent-schema-registry`, `kafka`, `postgres`, or `ssh-tunnel` |
+| `owner_id` | `text` | The role ID of the owner |
+| `privileges` | `mz_aclitem[]` | Access control privileges |
+| `create_sql` | `text` | The CREATE CONNECTION statement |
+| `redacted_create_sql` | `text` | CREATE statement with secrets redacted |
+
+### mz_secrets
+
+Contains one row for each secret in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the secret |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `schema_id` | `text` | The ID of the containing schema |
+| `name` | `text` | The name of the secret |
+| `owner_id` | `text` | The role ID of the owner |
+| `privileges` | `mz_aclitem[]` | Access control privileges |
+
+## Roles and Security
+
+### mz_roles
+
+Contains one row for each role in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the role |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `name` | `text` | The name of the role |
+| `inherit` | `boolean` | Whether the role inherits privileges |
+| `rolcanlogin` | `boolean` | Whether the role can log in |
+| `rolsuper` | `boolean` | Whether the role is a superuser |
+
+**Example:**
+```sql
+-- List all users who can log in
+SELECT name, rolsuper
+FROM mz_catalog.mz_roles
+WHERE rolcanlogin = true
+ORDER BY name;
+```
+
+### mz_role_members
+
+Contains role membership information.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `role_id` | `text` | The ID of the parent role |
+| `member` | `text` | The ID of the member role |
+| `grantor` | `text` | The ID of the role that granted membership |
+
+**Example:**
+```sql
+-- Show role hierarchy
+SELECT 
+  parent.name AS role,
+  member.name AS member,
+  grantor.name AS granted_by
+FROM mz_catalog.mz_role_members rm
+JOIN mz_catalog.mz_roles parent ON rm.role_id = parent.id
+JOIN mz_catalog.mz_roles member ON rm.member = member.id
+JOIN mz_catalog.mz_roles grantor ON rm.grantor = grantor.id;
+```
+
+## Auditing
+
+### mz_audit_events
+
+Records create, alter, and drop events for system objects.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `uint8` | Unique, monotonically increasing event ID |
+| `event_type` | `text` | Event type: `create`, `drop`, or `alter` |
+| `object_type` | `text` | Object type affected |
+| `details` | `jsonb` | Additional event details |
+| `user` | `text` | User who triggered the event (or NULL if system) |
+| `occurred_at` | `timestamp with time zone` | When the event occurred |
+
+**Example:**
+```sql
+-- Show recent DDL changes
+SELECT 
+  occurred_at,
+  event_type,
+  object_type,
+  user,
+  details->>'name' AS object_name
+FROM mz_catalog.mz_audit_events
+WHERE object_type IN ('source', 'view', 'materialized-view')
+ORDER BY occurred_at DESC
+LIMIT 50;
+```
+
+## Storage and Resource Monitoring
+
+### mz_recent_storage_usage
+
+Contains the most recent storage usage assessment for each table, source, and materialized view.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `object_id` | `text` | The ID of the object |
+| `size_bytes` | `uint8` | Storage bytes used |
+
+**Example:**
+```sql
+-- Top 10 objects by storage usage
+SELECT 
+  o.name,
+  o.type,
+  u.size_bytes / (1024 * 1024 * 1024.0) AS size_gb
+FROM mz_catalog.mz_recent_storage_usage u
+JOIN mz_catalog.mz_objects o ON u.object_id = o.id
+ORDER BY u.size_bytes DESC
+LIMIT 10;
+```
+
+### mz_storage_usage
+
+<Warning>
+This view is not indexed and can be slow to query. Use `mz_recent_storage_usage` when possible.
+</Warning>
+
+Contains historical storage usage data with periodic assessments.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `object_id` | `text` | The ID of the object |
+| `size_bytes` | `uint8` | Storage bytes used |
+| `collection_timestamp` | `timestamp with time zone` | When usage was assessed |
+
+**Example:**
+```sql
+-- Track storage growth over time for a specific object
+SELECT 
+  collection_timestamp,
+  size_bytes / (1024 * 1024 * 1024.0) AS size_gb
+FROM mz_catalog.mz_storage_usage
+WHERE object_id = (SELECT id FROM mz_catalog.mz_materialized_views WHERE name = 'my_mv')
+ORDER BY collection_timestamp DESC
+LIMIT 24; -- Last 24 hours
+```
+
+### mz_cluster_replica_frontiers
+
+Describes the per-replica frontiers of sources, sinks, materialized views, indexes, and subscriptions.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `object_id` | `text` | The ID of the object |
+| `replica_id` | `text` | The ID of the replica |
+| `write_frontier` | `mz_timestamp` | The next timestamp at which output may change |
+
+**Example:**
+```sql
+-- Check frontier alignment across replicas
+SELECT 
+  o.name AS object,
+  r.name AS replica,
+  f.write_frontier
+FROM mz_catalog.mz_cluster_replica_frontiers f
+JOIN mz_catalog.mz_objects o ON f.object_id = o.id
+JOIN mz_catalog.mz_cluster_replicas r ON f.replica_id = r.id
+WHERE o.name = 'my_materialized_view';
+```
+
+## Types and Functions
+
+### mz_types
+
+Contains one row for each type in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the type |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `schema_id` | `text` | The ID of the containing schema |
+| `name` | `text` | The name of the type |
+| `category` | `text` | The category of the type |
+| `owner_id` | `text` | The role ID of the owner |
+| `privileges` | `mz_aclitem[]` | Access control privileges |
+| `create_sql` | `text` | The CREATE TYPE statement |
+| `redacted_create_sql` | `text` | CREATE statement with secrets redacted |
+
+### mz_functions
+
+Contains one row for each function in the system.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `text` | Unique ID for the function |
+| `oid` | `oid` | PostgreSQL-compatible OID |
+| `schema_id` | `text` | The ID of the containing schema |
+| `name` | `text` | The name of the function |
+| `argument_type_ids` | `text[]` | IDs of argument types |
+| `variadic_argument_type_id` | `text` | ID of variadic argument type |
+| `return_type_id` | `text` | ID of return type |
+| `returns_set` | `boolean` | Whether the function returns a set |
+| `owner_id` | `text` | The role ID of the owner |
+
+## Advanced Monitoring Queries
+
+### Monitor Source Snapshotting Progress
+
+```sql
+SELECT
+  o.name,
+  s.snapshot_records_staged,
+  s.snapshot_records_known,
+  ROUND(
+    100.0 * s.snapshot_records_staged / 
+    NULLIF(s.snapshot_records_known, 0), 
+    2
+  ) AS snapshot_completed_pct
+FROM mz_internal.mz_source_statistics s
+JOIN mz_catalog.mz_objects o ON s.id = o.id
+WHERE NOT s.snapshot_committed;
+```
+
+### Find Unused Indexes
+
+```sql
+-- Indexes that might not be needed
+SELECT 
+  i.name AS index_name,
+  o.name AS indexed_object
+FROM mz_catalog.mz_indexes i
+JOIN mz_catalog.mz_objects o ON i.on_id = o.id
+WHERE NOT EXISTS (
+  SELECT 1 
+  FROM mz_internal.mz_compute_dependencies d
+  WHERE d.dependency_id = i.id
+);
+```
+
+### Cluster Resource Allocation Summary
+
+```sql
+SELECT 
+  c.name AS cluster,
+  COUNT(DISTINCT r.id) AS replica_count,
+  s.size,
+  s.cpu_nano_cores / 1000000000.0 AS cpu_cores,
+  s.memory_bytes / (1024.0 * 1024 * 1024) AS memory_gb,
+  s.credits_per_hour * COUNT(DISTINCT r.id) AS total_credits_per_hour
+FROM mz_catalog.mz_clusters c
+JOIN mz_catalog.mz_cluster_replicas r ON c.id = r.cluster_id
+JOIN mz_catalog.mz_cluster_replica_sizes s ON r.size = s.size
+GROUP BY c.name, s.size, s.cpu_nano_cores, s.memory_bytes, s.credits_per_hour
+ORDER BY total_credits_per_hour DESC;
+```
+
+## See Also
+
+- [System Catalog Overview](/sql/system-catalog/overview) - Introduction and common patterns
+- [information_schema](/sql/system-catalog/information-schema) - SQL standard interface
+- [Monitoring Data Ingestion](/ingest-data/monitoring) - Source monitoring guide

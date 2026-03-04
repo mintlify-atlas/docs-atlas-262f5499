@@ -1,0 +1,185 @@
+---
+title: "System Catalog Overview"
+description: "Learn about Materialize's system catalog and how to query metadata about your database objects."
+---
+
+## What is the System Catalog?
+
+The system catalog is a collection of schemas that expose metadata about your Materialize instance. It contains information about all database objects including sources, tables, views, materialized views, indexes, sinks, clusters, and more.
+
+The system catalog is automatically available in all databases and provides multiple interfaces for querying metadata:
+
+- **`mz_catalog`** - Materialize's native catalog format (recommended)
+- **`information_schema`** - SQL standard interface for compatibility
+- **`pg_catalog`** - PostgreSQL-compatible interface
+- **`mz_internal`** - Internal metadata (unstable, may change)
+- **`mz_introspection`** - Replica introspection and performance data
+
+## Why Use the System Catalog?
+
+The system catalog is essential for:
+
+- **Discovery**: Find existing objects and understand your database structure
+- **Monitoring**: Track resource usage, data freshness, and ingestion progress
+- **Debugging**: Investigate query performance and dataflow dependencies
+- **Automation**: Build tools that programmatically inspect and manage your database
+- **Auditing**: Review object ownership, privileges, and change history
+
+## Querying the System Catalog
+
+All system catalog schemas are implicitly available. You can query them directly without any special setup:
+
+```sql
+-- List all sources
+SELECT name, type FROM mz_catalog.mz_sources;
+
+-- Find materialized views in a specific schema
+SELECT mv.name, s.name AS schema_name
+FROM mz_catalog.mz_materialized_views mv
+JOIN mz_catalog.mz_schemas s ON mv.schema_id = s.id
+WHERE s.name = 'public';
+
+-- Check cluster sizes and resource allocation
+SELECT 
+  c.name AS cluster_name,
+  r.name AS replica_name,
+  r.size,
+  rs.processes,
+  rs.memory_bytes
+FROM mz_catalog.mz_clusters c
+JOIN mz_catalog.mz_cluster_replicas r ON c.id = r.cluster_id
+JOIN mz_catalog.mz_cluster_replica_sizes rs ON r.size = rs.size;
+```
+
+## Which Schema Should I Use?
+
+**Use `mz_catalog` whenever possible.** It provides the most accurate and complete representation of Materialize concepts.
+
+- **`mz_catalog`**: Best for Materialize-native applications. Contains all metadata in Materialize's native format.
+- **`information_schema`**: Use for SQL standard compatibility. Incomplete but useful for tools expecting standard SQL schemas.
+- **`pg_catalog`**: Use for PostgreSQL tool compatibility. Maps Materialize concepts to PostgreSQL equivalents where possible.
+- **`mz_internal`**: Advanced use only. Unstable and may change without notice.
+- **`mz_introspection`**: Performance monitoring and dataflow introspection.
+
+## Common Catalog Queries
+
+### Inspect Database Structure
+
+```sql
+-- List all databases
+SELECT name FROM mz_catalog.mz_databases;
+
+-- List all schemas in the current database
+SELECT name FROM mz_catalog.mz_schemas;
+
+-- List all objects in a schema
+SELECT name, type 
+FROM mz_catalog.mz_objects 
+WHERE schema_id = (SELECT id FROM mz_catalog.mz_schemas WHERE name = 'public');
+```
+
+### Monitor Data Freshness
+
+```sql
+-- Check if sources are up to date or lagging
+SELECT
+  s.name,
+  h.hydrated
+FROM mz_catalog.mz_sources s
+JOIN mz_internal.mz_hydration_statuses h ON s.id = h.object_id;
+
+-- Monitor source lag
+SELECT
+  o.name,
+  s.offset_known - s.offset_committed AS offset_delta
+FROM mz_internal.mz_source_statistics s
+JOIN mz_catalog.mz_objects o ON s.id = o.id
+WHERE s.snapshot_committed;
+```
+
+### Track Resource Usage
+
+```sql
+-- View storage usage by object
+SELECT 
+  o.name,
+  o.type,
+  r.size_bytes / (1024 * 1024 * 1024) AS size_gb
+FROM mz_catalog.mz_recent_storage_usage r
+JOIN mz_catalog.mz_objects o ON r.object_id = o.id
+ORDER BY r.size_bytes DESC;
+```
+
+### Inspect Dependencies
+
+```sql
+-- Find what a view depends on
+SELECT 
+  v.name AS view_name,
+  dep.name AS depends_on,
+  dep.type AS dependency_type
+FROM mz_catalog.mz_views v
+JOIN mz_internal.mz_compute_dependencies cd ON v.id = cd.object_id
+JOIN mz_catalog.mz_objects dep ON cd.dependency_id = dep.id
+WHERE v.name = 'my_view';
+```
+
+### Audit and Security
+
+```sql
+-- List all roles and their login capabilities
+SELECT name, rolcanlogin, rolsuper FROM mz_catalog.mz_roles;
+
+-- Check object ownership
+SELECT 
+  o.name,
+  o.type,
+  r.name AS owner
+FROM mz_catalog.mz_objects o
+JOIN mz_catalog.mz_roles r ON o.owner_id = r.id;
+
+-- Review recent audit events
+SELECT 
+  event_type,
+  object_type,
+  user,
+  occurred_at,
+  details
+FROM mz_catalog.mz_audit_events
+ORDER BY occurred_at DESC
+LIMIT 20;
+```
+
+## Important Considerations
+
+### Column Projection Required
+
+When creating views that reference system catalog tables, you **must** explicitly list columns. `SELECT *` and `NATURAL JOIN` are not supported:
+
+```sql
+-- ❌ This will fail
+CREATE VIEW my_sources AS SELECT * FROM mz_catalog.mz_sources;
+
+-- ✅ This works
+CREATE VIEW my_sources AS 
+SELECT id, name, type FROM mz_catalog.mz_sources;
+```
+
+### Performance Considerations
+
+Most catalog views are lightweight, but some (like `mz_storage_usage`) scan large amounts of data:
+
+- Use `mz_recent_storage_usage` instead of `mz_storage_usage` when you only need current data
+- Add filters (`WHERE` clauses) to limit result sets
+- Be cautious when joining multiple large catalog tables
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="mz_catalog Reference" icon="database" href="/sql/system-catalog/mz-catalog">
+    Detailed reference for all mz_catalog tables and views
+  </Card>
+  <Card title="information_schema Reference" icon="table" href="/sql/system-catalog/information-schema">
+    SQL standard system catalog interface
+  </Card>
+</CardGroup>

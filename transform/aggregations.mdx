@@ -1,0 +1,634 @@
+---
+title: 'Aggregations'
+description: 'Learn how to use GROUP BY, HAVING, aggregate functions, and window patterns in Materialize for streaming data'
+---
+
+## Aggregate functions
+
+Materialize supports standard SQL aggregate functions that update incrementally as data changes:
+
+- `COUNT(*)` / `COUNT(column)` - count rows or non-null values
+- `SUM(column)` - sum numeric values
+- `AVG(column)` - average of values
+- `MIN(column)` / `MAX(column)` - minimum/maximum values
+- `STDDEV(column)` / `VARIANCE(column)` - statistical measures
+- `STRING_AGG(column, delimiter)` - concatenate strings
+- `ARRAY_AGG(column)` - aggregate values into array
+- `JSONB_AGG(column)` - aggregate values into JSONB array
+- `JSONB_OBJECT_AGG(keys, values)` - create JSONB objects
+- `MAP_AGG(keys, values)` - create map from key-value pairs
+- `LIST_AGG(column)` - aggregate into list
+
+## Basic GROUP BY
+
+### Simple aggregation
+
+```sql
+CREATE MATERIALIZED VIEW product_sales AS
+SELECT 
+    product_id,
+    COUNT(*) as sale_count,
+    SUM(quantity) as total_quantity,
+    SUM(amount) as total_revenue,
+    AVG(amount) as avg_sale_amount,
+    MIN(amount) as min_sale,
+    MAX(amount) as max_sale
+FROM order_items
+GROUP BY product_id;
+```
+
+As new orders arrive, Materialize incrementally updates aggregates:
+
+```sql
+-- New sale: product_id=42, quantity=3, amount=75.00
+INSERT INTO order_items VALUES (101, 42, 3, 75.00);
+
+-- Materialize updates only product_id=42:
+-- sale_count += 1
+-- total_quantity += 3
+-- total_revenue += 75.00
+-- avg_sale_amount recalculated as SUM / COUNT
+-- min_sale, max_sale checked and updated if needed
+```
+
+### Multi-column GROUP BY
+
+```sql
+CREATE MATERIALIZED VIEW daily_regional_sales AS
+SELECT 
+    DATE_TRUNC('day', created_at) as day,
+    region_id,
+    COUNT(DISTINCT order_id) as order_count,
+    COUNT(DISTINCT user_id) as unique_customers,
+    SUM(amount) as total_revenue
+FROM orders
+GROUP BY day, region_id;
+```
+
+Grouping by multiple columns creates one aggregate row per unique combination.
+
+### GROUP BY with expressions
+
+```sql
+CREATE MATERIALIZED VIEW hourly_order_stats AS
+SELECT 
+    DATE_TRUNC('hour', created_at) as hour,
+    EXTRACT(hour FROM created_at) as hour_of_day,
+    EXTRACT(dow FROM created_at) as day_of_week,
+    COUNT(*) as order_count,
+    AVG(amount) as avg_order_value
+FROM orders
+GROUP BY hour, hour_of_day, day_of_week;
+```
+
+## HAVING clause
+
+`HAVING` filters aggregated results after grouping:
+
+```sql
+CREATE MATERIALIZED VIEW high_volume_products AS
+SELECT 
+    product_id,
+    COUNT(*) as sale_count,
+    SUM(quantity) as total_units,
+    SUM(amount) as total_revenue
+FROM order_items
+GROUP BY product_id
+HAVING 
+    COUNT(*) > 100 
+    AND SUM(amount) > 10000;
+```
+
+As aggregates update:
+- Products crossing the threshold appear in the view
+- Products falling below the threshold are removed
+- All maintained incrementally
+
+### HAVING with complex conditions
+
+```sql
+CREATE MATERIALIZED VIEW engaged_users AS
+SELECT 
+    user_id,
+    COUNT(*) as action_count,
+    COUNT(DISTINCT DATE_TRUNC('day', timestamp)) as active_days,
+    MAX(timestamp) as last_activity
+FROM user_activities
+GROUP BY user_id
+HAVING 
+    COUNT(*) > 50
+    AND COUNT(DISTINCT DATE_TRUNC('day', timestamp)) > 7
+    AND MAX(timestamp) >= NOW() - INTERVAL '30 days';
+```
+
+## Incremental aggregate maintenance
+
+### How aggregates update
+
+Materialize maintains aggregate state and updates incrementally:
+
+```sql
+CREATE MATERIALIZED VIEW user_stats AS
+SELECT 
+    user_id,
+    COUNT(*) as order_count,
+    SUM(amount) as lifetime_value
+FROM orders
+GROUP BY user_id;
+```
+
+Internal state for each user:
+
+```
+user_id=5: {count: 10, sum: 2500.00}
+user_id=7: {count: 3, sum: 450.00}
+...
+```
+
+When a new order arrives:
+
+```sql
+INSERT INTO orders VALUES (101, 5, 150.00, ...);
+```
+
+Materialize:
+1. Looks up state for `user_id=5`
+2. Updates: `count += 1, sum += 150.00`
+3. New state: `{count: 11, sum: 2650.00}`
+
+Only one user's state is touched, even if the view has millions of users.
+
+### Handling updates and deletes
+
+Updates are treated as delete + insert:
+
+```sql
+UPDATE orders SET amount = 200.00 WHERE id = 101;
+```
+
+Internally:
+1. Delete old: `user_id=5, count -= 1, sum -= 150.00`
+2. Insert new: `user_id=5, count += 1, sum += 200.00`
+3. Net change: `sum += 50.00`
+
+Deletes decrement:
+
+```sql
+DELETE FROM orders WHERE id = 101;
+```
+
+Applies: `user_id=5, count -= 1, sum -= 200.00`
+
+### MIN/MAX maintenance
+
+Materialize efficiently maintains `MIN` and `MAX` even when values are deleted:
+
+```sql
+CREATE MATERIALIZED VIEW product_price_ranges AS
+SELECT 
+    product_id,
+    MIN(price) as lowest_price,
+    MAX(price) as highest_price
+FROM order_items
+GROUP BY product_id;
+```
+
+If the current minimum is deleted, Materialize finds the new minimum from its maintained state without scanning all data.
+
+## Filtered aggregates
+
+Apply filters to specific aggregate functions using `FILTER`:
+
+```sql
+CREATE MATERIALIZED VIEW user_segmentation AS
+SELECT 
+    user_id,
+    COUNT(*) as total_orders,
+    COUNT(*) FILTER (WHERE amount > 100) as high_value_orders,
+    COUNT(*) FILTER (WHERE amount <= 100) as low_value_orders,
+    SUM(amount) as total_spent,
+    SUM(amount) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days') as spent_last_30d,
+    COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') as orders_last_7d
+FROM orders
+GROUP BY user_id;
+```
+
+Each aggregate can have its own filter condition.
+
+### Example: Product performance by tier
+
+```sql
+CREATE MATERIALIZED VIEW product_tier_performance AS
+SELECT 
+    product_id,
+    COUNT(DISTINCT o.user_id) FILTER (WHERE u.tier = 'premium') as premium_customers,
+    COUNT(DISTINCT o.user_id) FILTER (WHERE u.tier = 'standard') as standard_customers,
+    SUM(oi.amount) FILTER (WHERE u.tier = 'premium') as premium_revenue,
+    SUM(oi.amount) FILTER (WHERE u.tier = 'standard') as standard_revenue
+FROM order_items oi
+JOIN orders o ON oi.order_id = o.id
+JOIN users u ON o.user_id = u.id
+GROUP BY product_id;
+```
+
+## DISTINCT aggregates
+
+Count or aggregate distinct values:
+
+```sql
+CREATE MATERIALIZED VIEW campaign_metrics AS
+SELECT 
+    campaign_id,
+    COUNT(*) as total_events,
+    COUNT(DISTINCT user_id) as unique_users,
+    COUNT(DISTINCT session_id) as unique_sessions,
+    COUNT(DISTINCT DATE_TRUNC('day', timestamp)) as active_days
+FROM events
+GROUP BY campaign_id;
+```
+
+Materialize maintains sets of distinct values for each group and updates them incrementally.
+
+## Aggregate functions in detail
+
+### String aggregation
+
+```sql
+CREATE MATERIALIZED VIEW order_product_lists AS
+SELECT 
+    order_id,
+    STRING_AGG(product_name, ', ' ORDER BY product_name) as products
+FROM order_items
+JOIN products ON order_items.product_id = products.id
+GROUP BY order_id;
+```
+
+Result: `"Apple, Banana, Orange"`
+
+### Array aggregation
+
+```sql
+CREATE MATERIALIZED VIEW user_purchase_history AS
+SELECT 
+    user_id,
+    ARRAY_AGG(product_id ORDER BY created_at DESC) as recent_products
+FROM orders
+JOIN order_items ON orders.id = order_items.order_id
+GROUP BY user_id;
+```
+
+Result: `[42, 17, 93, 5]`
+
+### JSONB aggregation
+
+```sql
+CREATE MATERIALIZED VIEW user_activity_summary AS
+SELECT 
+    user_id,
+    JSONB_OBJECT_AGG(
+        activity_type,
+        activity_count
+    ) as activity_breakdown
+FROM (
+    SELECT 
+        user_id,
+        activity_type,
+        COUNT(*) as activity_count
+    FROM user_activities
+    GROUP BY user_id, activity_type
+) subq
+GROUP BY user_id;
+```
+
+Result: `{"pageview": 150, "click": 45, "purchase": 3}`
+
+### Map aggregation
+
+```sql
+CREATE MATERIALIZED VIEW product_attributes AS
+SELECT 
+    product_id,
+    MAP_AGG(attribute_name, attribute_value) as attributes
+FROM product_attribute_values
+GROUP BY product_id;
+```
+
+## Statistical aggregates
+
+```sql
+CREATE MATERIALIZED VIEW sales_statistics AS
+SELECT 
+    region_id,
+    COUNT(*) as sample_size,
+    AVG(amount) as mean_sale,
+    STDDEV(amount) as stddev_sale,
+    VARIANCE(amount) as variance_sale,
+    -- Calculate coefficient of variation
+    CASE 
+        WHEN AVG(amount) > 0 
+        THEN STDDEV(amount) / AVG(amount) 
+        ELSE NULL 
+    END as cv
+FROM orders
+GROUP BY region_id;
+```
+
+## Nested aggregations
+
+Aggregate results of aggregations:
+
+```sql
+CREATE MATERIALIZED VIEW category_summary AS
+SELECT 
+    category,
+    COUNT(*) as product_count,
+    SUM(total_revenue) as category_revenue,
+    AVG(total_revenue) as avg_product_revenue,
+    MAX(total_revenue) as top_product_revenue
+FROM (
+    SELECT 
+        p.category,
+        p.id as product_id,
+        SUM(oi.quantity * oi.price) as total_revenue
+    FROM products p
+    JOIN order_items oi ON p.id = oi.product_id
+    GROUP BY p.category, p.id
+) product_totals
+GROUP BY category;
+```
+
+Inner query aggregates by product, outer query aggregates by category.
+
+## Window function patterns
+
+Materialize doesn't support traditional window functions like `ROW_NUMBER() OVER (PARTITION BY ...)`. Instead, use **idiomatic patterns** that are more efficient for streaming:
+
+### Top-K pattern
+
+Instead of `ROW_NUMBER()`, use `DISTINCT ON` for Top-1:
+
+```sql
+-- ✅ Idiomatic Materialize SQL (Top-1)
+CREATE MATERIALIZED VIEW latest_order_per_user AS
+SELECT DISTINCT ON(user_id) 
+    user_id,
+    id as order_id,
+    amount,
+    created_at
+FROM orders
+ORDER BY user_id, created_at DESC;
+```
+
+For Top-K where K > 1, use `LATERAL`:
+
+```sql
+-- ✅ Idiomatic Materialize SQL (Top-K)
+CREATE MATERIALIZED VIEW top_3_products_per_category AS
+SELECT 
+    category,
+    product_id,
+    total_revenue
+FROM (
+    SELECT DISTINCT category FROM products
+) categories
+CROSS JOIN LATERAL (
+    SELECT 
+        p.id as product_id,
+        SUM(oi.quantity * oi.price) as total_revenue
+    FROM products p
+    JOIN order_items oi ON p.id = oi.product_id
+    WHERE p.category = categories.category
+    GROUP BY p.id
+    ORDER BY total_revenue DESC
+    LIMIT 3
+) top_products
+ORDER BY category, total_revenue DESC;
+```
+
+<Tip>
+  Use query hints to optimize Top-K performance:
+  
+  ```sql
+  SELECT DISTINCT ON(user_id) user_id, order_id, amount
+  FROM orders
+  OPTIONS (DISTINCT ON INPUT GROUP SIZE = 100)
+  ORDER BY user_id, created_at DESC;
+  ```
+</Tip>
+
+### LAG/LEAD patterns
+
+For accessing previous/next row values when ordering follows a regular pattern, use self-joins:
+
+```sql
+-- ✅ Idiomatic: Compare consecutive hourly values
+CREATE MATERIALIZED VIEW hourly_growth AS
+SELECT 
+    t1.hour as current_hour,
+    t1.order_count as current_count,
+    t2.order_count as previous_count,
+    (t1.order_count - t2.order_count) as growth
+FROM hourly_orders t1
+JOIN hourly_orders t2 
+    ON t1.hour = t2.hour + INTERVAL '1 hour';
+```
+
+For irregular ordering, use `LEFT JOIN`:
+
+```sql
+CREATE MATERIALIZED VIEW user_order_changes AS
+SELECT 
+    o1.id as order_id,
+    o1.user_id,
+    o1.amount as current_amount,
+    o2.amount as previous_amount,
+    (o1.amount - COALESCE(o2.amount, 0)) as amount_change
+FROM orders o1
+LEFT JOIN orders o2 
+    ON o1.user_id = o2.user_id 
+    AND o2.created_at = (
+        SELECT MAX(created_at) 
+        FROM orders 
+        WHERE user_id = o1.user_id 
+        AND created_at < o1.created_at
+    );
+```
+
+### Running totals
+
+Calculate running totals using self-joins:
+
+```sql
+CREATE MATERIALIZED VIEW daily_cumulative_revenue AS
+SELECT 
+    d1.day,
+    d1.daily_revenue,
+    SUM(d2.daily_revenue) as cumulative_revenue
+FROM daily_revenue d1
+JOIN daily_revenue d2 ON d2.day <= d1.day
+GROUP BY d1.day, d1.daily_revenue
+ORDER BY d1.day;
+```
+
+## Temporal filters
+
+Use `mz_now()` to create time-windowed aggregations:
+
+```sql
+CREATE MATERIALIZED VIEW recent_order_summary AS
+SELECT 
+    region_id,
+    COUNT(*) as order_count,
+    SUM(amount) as total_revenue
+FROM orders
+WHERE mz_now() <= created_at + INTERVAL '1 hour'
+GROUP BY region_id;
+```
+
+This maintains a **sliding 1-hour window**:
+- Only orders from the last hour are included
+- As time advances, old orders automatically drop out
+- New orders automatically enter the window
+- All maintained incrementally
+
+### Example: Real-time dashboard
+
+```sql
+-- Last 5 minutes of activity
+CREATE MATERIALIZED VIEW last_5min_activity AS
+SELECT 
+    activity_type,
+    COUNT(*) as event_count,
+    COUNT(DISTINCT user_id) as unique_users
+FROM user_activities
+WHERE mz_now() <= timestamp + INTERVAL '5 minutes'
+GROUP BY activity_type;
+
+-- Last 24 hours by hour
+CREATE MATERIALIZED VIEW last_24h_hourly AS
+SELECT 
+    DATE_TRUNC('hour', created_at) as hour,
+    COUNT(*) as order_count,
+    SUM(amount) as revenue
+FROM orders
+WHERE mz_now() <= created_at + INTERVAL '24 hours'
+GROUP BY hour;
+```
+
+## Query hints for aggregations
+
+Help the optimizer with aggregate query hints:
+
+```sql
+CREATE MATERIALIZED VIEW optimized_product_stats AS
+SELECT 
+    product_id,
+    MIN(price) as min_price,
+    MAX(price) as max_price,
+    COUNT(*) as sale_count
+FROM order_items
+GROUP BY product_id
+OPTIONS (AGGREGATE INPUT GROUP SIZE = 1000);
+```
+
+This tells Materialize to expect ~1000 rows per product_id, helping it allocate resources efficiently.
+
+## Practical example: E-commerce analytics
+
+Complete example with multiple aggregation patterns:
+
+```sql
+-- Base aggregation: Daily product performance
+CREATE MATERIALIZED VIEW daily_product_metrics AS
+SELECT 
+    DATE_TRUNC('day', o.created_at) as day,
+    p.id as product_id,
+    p.name as product_name,
+    p.category,
+    COUNT(DISTINCT oi.order_id) as order_count,
+    SUM(oi.quantity) as units_sold,
+    SUM(oi.quantity * oi.price) as revenue,
+    AVG(oi.quantity * oi.price) as avg_order_value,
+    COUNT(DISTINCT o.user_id) as unique_customers
+FROM order_items oi
+JOIN orders o ON oi.order_id = o.id
+JOIN products p ON oi.product_id = p.id
+GROUP BY day, p.id, p.name, p.category;
+
+-- Layer 2: Weekly rollups
+CREATE MATERIALIZED VIEW weekly_product_metrics AS
+SELECT 
+    DATE_TRUNC('week', day) as week,
+    product_id,
+    product_name,
+    category,
+    SUM(order_count) as weekly_orders,
+    SUM(units_sold) as weekly_units,
+    SUM(revenue) as weekly_revenue,
+    AVG(avg_order_value) as avg_order_value
+FROM daily_product_metrics
+GROUP BY week, product_id, product_name, category;
+
+-- Layer 3: Category performance
+CREATE MATERIALIZED VIEW category_performance AS
+SELECT 
+    category,
+    COUNT(DISTINCT product_id) as product_count,
+    SUM(weekly_revenue) as total_revenue,
+    SUM(weekly_units) as total_units,
+    AVG(weekly_revenue) as avg_product_revenue
+FROM weekly_product_metrics
+WHERE week >= DATE_TRUNC('week', NOW()) - INTERVAL '12 weeks'
+GROUP BY category
+HAVING SUM(weekly_revenue) > 10000;
+
+-- Layer 4: Top performers
+CREATE MATERIALIZED VIEW top_products_last_30d AS
+SELECT DISTINCT ON(category)
+    category,
+    product_id,
+    product_name,
+    SUM(revenue) as revenue_30d
+FROM daily_product_metrics
+WHERE day >= CURRENT_DATE - INTERVAL '30 days'
+GROUP BY category, product_id, product_name
+ORDER BY category, revenue_30d DESC;
+```
+
+All layers update incrementally as orders arrive:
+
+```sql
+-- New order arrives
+INSERT INTO orders VALUES (101, 5, '2024-03-15 14:30:00', ...);
+INSERT INTO order_items VALUES (201, 101, 42, 2, 25.00);
+
+-- Materialize updates:
+-- 1. daily_product_metrics for day=2024-03-15, product_id=42
+-- 2. weekly_product_metrics for week=2024-03-11, product_id=42
+-- 3. category_performance for that product's category
+-- 4. top_products_last_30d if product ranking changes
+```
+
+Query examples:
+
+```sql
+-- Recent trends
+SELECT * FROM daily_product_metrics 
+WHERE day >= CURRENT_DATE - 7
+ORDER BY revenue DESC;
+
+-- Category comparison
+SELECT * FROM category_performance
+ORDER BY total_revenue DESC;
+
+-- Top products
+SELECT * FROM top_products_last_30d;
+```
+
+## Related resources
+
+- [SQL: SELECT](/sql/select)
+- [SQL Functions: Aggregate](/sql/functions#aggregate-functions)
+- [Idiomatic SQL: Top-K](/transform-data/idiomatic-materialize-sql/top-k)
+- [Temporal Filters](/transform-data/patterns/temporal-filters)
+- [Query Optimization](/transform/optimization)

@@ -1,0 +1,341 @@
+---
+title: 'CREATE CLUSTER'
+description: 'Create and configure compute clusters in Materialize'
+---
+
+## Overview
+
+CREATE CLUSTER creates a new cluster, which provides isolated compute resources (CPU, memory, and disk) for maintaining dataflows and serving queries.
+
+## Syntax
+
+```sql
+CREATE CLUSTER [IF NOT EXISTS] <cluster_name> (
+  SIZE = '<size>',
+  REPLICATION FACTOR = <count>,
+  [SCHEDULE = { ON REFRESH | MANUAL }]
+);
+```
+
+## Key Concepts
+
+### Resource Isolation
+
+Clusters provide dedicated compute resources:
+
+```sql
+-- Development cluster
+CREATE CLUSTER dev (
+  SIZE = 'M.1-xsmall',
+  REPLICATION FACTOR = 1
+);
+
+-- Production cluster
+CREATE CLUSTER prod (
+  SIZE = 'M.1-large',
+  REPLICATION FACTOR = 2
+);
+```
+
+Workloads on different clusters don't compete for resources.
+
+### Cluster Sizes
+
+Materialize offers M.1 cluster sizes:
+
+| Size | Credits/Hour | Use Case |
+|------|--------------|----------|
+| `M.1-xsmall` | 0.5 | Development, testing |
+| `M.1-small` | 1 | Small workloads |
+| `M.1-medium` | 2 | Medium workloads |
+| `M.1-large` | 4 | Production workloads |
+| `M.1-xlarge` | 8 | Large production workloads |
+| `M.1-2xlarge` | 16 | Very large workloads |
+| `M.1-3xlarge` | 32 | Extremely large workloads |
+| `M.1-4xlarge` | 64 | Maximum performance |
+
+Larger sizes provide:
+- More CPU cores
+- More memory
+- More disk space
+
+## Parameters
+
+<ParamField path="cluster_name" type="identifier" required>
+  Name of the cluster to create
+</ParamField>
+
+<ParamField path="SIZE" type="string" required>
+  Cluster size (e.g., `'M.1-large'`)
+</ParamField>
+
+<ParamField path="REPLICATION FACTOR" type="integer" required>
+  Number of replicas (1 or more for availability, 0 to pause)
+</ParamField>
+
+<ParamField path="SCHEDULE" type="keyword">
+  Scheduling strategy: `ON REFRESH` for scheduled clusters, `MANUAL` for always-on (default)
+</ParamField>
+
+## Replication Factor
+
+The replication factor determines fault tolerance:
+
+```sql
+-- Single replica (no fault tolerance)
+CREATE CLUSTER single (
+  SIZE = 'M.1-medium',
+  REPLICATION FACTOR = 1
+);
+
+-- High availability (can tolerate 1 failure)
+CREATE CLUSTER ha (
+  SIZE = 'M.1-medium',
+  REPLICATION FACTOR = 2
+);
+```
+
+<Note>
+  **Replication increases fault tolerance, not capacity.**
+  
+  Each replica does the same work. To increase capacity, use a larger SIZE.
+</Note>
+
+**Replica Properties:**
+- Automatically named (`r1`, `r2`, etc.)
+- Never on same physical hardware
+- Spread across availability zones
+- Process identical computations
+
+## Active Cluster
+
+Set the active cluster for operations:
+
+```sql
+-- Show current cluster
+SHOW cluster;
+
+-- Switch to different cluster
+SET cluster = prod;
+
+-- Create objects in specific cluster
+CREATE MATERIALIZED VIEW mv IN CLUSTER prod AS ...;
+```
+
+## Pausing Clusters
+
+Set replication factor to 0 to pause:
+
+```sql
+-- Pause cluster (stop all work)
+ALTER CLUSTER dev SET (REPLICATION FACTOR = 0);
+
+-- Resume cluster
+ALTER CLUSTER dev SET (REPLICATION FACTOR = 1);
+```
+
+Paused clusters:
+- Consume no credits
+- Don't maintain indexes or materialized views
+- Can't serve queries
+
+## Scheduled Clusters
+
+For materialized views with refresh strategies:
+
+```sql
+CREATE CLUSTER scheduled (
+  SIZE = 'M.1-large',
+  SCHEDULE = ON REFRESH (HYDRATION TIME ESTIMATE = '1 hour')
+);
+
+CREATE MATERIALIZED VIEW daily_report
+  IN CLUSTER scheduled
+  WITH (REFRESH EVERY '1 day' ALIGNED TO '2024-01-01 00:00:00')
+  AS SELECT * FROM data;
+```
+
+**Scheduled clusters:**
+- Turn on automatically before refreshes
+- Turn off after refreshes complete
+- Only consume credits when active
+- Require `HYDRATION TIME ESTIMATE`
+
+## Examples
+
+### Development Cluster
+
+```sql
+CREATE CLUSTER development (
+  SIZE = 'M.1-xsmall',
+  REPLICATION FACTOR = 1
+);
+
+SET cluster = development;
+
+CREATE MATERIALIZED VIEW test_view AS
+  SELECT * FROM source WHERE amount > 100;
+```
+
+### Production Cluster with High Availability
+
+```sql
+CREATE CLUSTER production (
+  SIZE = 'M.1-large',
+  REPLICATION FACTOR = 3  -- Can tolerate 2 failures
+);
+
+SET cluster = production;
+
+CREATE MATERIALIZED VIEW critical_metrics AS
+  SELECT
+    date_trunc('minute', event_time) AS minute,
+    COUNT(*) AS event_count
+  FROM events
+  GROUP BY minute;
+```
+
+### Separate Clusters for Different Workloads
+
+```sql
+-- Cluster for data ingestion
+CREATE CLUSTER ingestion (
+  SIZE = 'M.1-medium',
+  REPLICATION FACTOR = 2
+);
+
+-- Cluster for analytics queries  
+CREATE CLUSTER analytics (
+  SIZE = 'M.1-xlarge',
+  REPLICATION FACTOR = 1
+);
+
+-- Cluster for serving APIs
+CREATE CLUSTER api (
+  SIZE = 'M.1-large',
+  REPLICATION FACTOR = 3
+);
+```
+
+### Scheduled Cluster for Reports
+
+```sql
+CREATE CLUSTER nightly_reports (
+  SIZE = 'M.1-xlarge',
+  SCHEDULE = ON REFRESH (HYDRATION TIME ESTIMATE = '30 minutes')
+);
+
+CREATE MATERIALIZED VIEW daily_summary
+  IN CLUSTER nightly_reports
+  WITH (
+    REFRESH AT CREATION,
+    REFRESH EVERY '1 day' ALIGNED TO '2024-01-01 02:00:00'
+  )
+  AS
+    SELECT
+      date_trunc('day', order_date) AS day,
+      COUNT(*) AS order_count,
+      SUM(amount) AS total_revenue
+    FROM orders
+    GROUP BY day;
+```
+
+## Cluster Sizing Guide
+
+### When to Size Up
+
+- Queries are slow
+- High memory usage (check system catalogs)
+- Dataflow hydration takes too long
+- Cluster can't keep up with data ingestion
+
+### When to Add Replicas
+
+- Need fault tolerance
+- Availability is critical
+- Can tolerate failures
+
+<Warning>
+  Adding replicas does NOT increase query performance or throughput. It only increases fault tolerance.
+</Warning>
+
+### When to Create Multiple Clusters
+
+- Isolate workloads (dev/staging/prod)
+- Separate ingestion from queries
+- Different SLAs for different users
+- Cost optimization (pause unused clusters)
+
+## Credit Usage
+
+Clusters consume credits based on size and replicas:
+
+```
+Credits/hour = Size credits × Replication factor
+```
+
+Examples:
+- `M.1-small` (1 credit/hr) × 2 replicas = 2 credits/hr
+- `M.1-large` (4 credits/hr) × 3 replicas = 12 credits/hr
+- Paused cluster (0 replicas) = 0 credits/hr
+
+Credit usage is metered per second.
+
+## Managing Clusters
+
+### Resize a Cluster
+
+```sql
+ALTER CLUSTER prod SET (SIZE = 'M.1-xlarge');
+```
+
+### Change Replication Factor
+
+```sql
+ALTER CLUSTER prod SET (REPLICATION FACTOR = 3);
+```
+
+### Drop a Cluster
+
+```sql
+DROP CLUSTER dev;
+```
+
+<Warning>
+  Dropping a cluster drops all indexes hosted on it. Materialized views are not dropped.
+</Warning>
+
+## Best Practices
+
+1. **Start Small**: Begin with small clusters and size up as needed
+   ```sql
+   CREATE CLUSTER test (SIZE = 'M.1-xsmall', REPLICATION FACTOR = 1);
+   ```
+
+2. **Isolate Workloads**: Use separate clusters for different purposes
+   ```sql
+   CREATE CLUSTER ingestion (...);
+   CREATE CLUSTER analytics (...);
+   ```
+
+3. **Pause When Idle**: Set replication factor to 0 for unused clusters
+   ```sql
+   ALTER CLUSTER dev SET (REPLICATION FACTOR = 0);
+   ```
+
+4. **Monitor Usage**: Check cluster utilization regularly
+   ```sql
+   SELECT * FROM mz_internal.mz_cluster_replica_utilization;
+   ```
+
+5. **Use Scheduled Clusters**: For periodic reporting workloads
+
+6. **Plan for Growth**: Leave headroom for data volume increases
+
+## Related Pages
+
+- [ALTER CLUSTER](/sql/alter-cluster)
+- [DROP CLUSTER](/sql/drop-cluster)
+- [SHOW CLUSTERS](/sql/show-clusters)
+- [CREATE MATERIALIZED VIEW](/sql/create-materialized-view)
+- [CREATE INDEX](/sql/create-index)

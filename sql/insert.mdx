@@ -1,0 +1,332 @@
+---
+title: 'INSERT'
+description: 'Insert rows into tables in Materialize'
+---
+
+## Overview
+
+INSERT adds new rows to user-defined tables. It supports inserting literal values or results from SELECT queries.
+
+## Syntax
+
+```sql
+INSERT INTO <table_name> [(<column> [, ...])]
+  { VALUES (<value> [, ...]) [, ...] | SELECT ... };
+```
+
+## Parameters
+
+<ParamField path="table_name" type="identifier" required>
+  Name of the table to insert into
+</ParamField>
+
+<ParamField path="column" type="identifier">
+  Column names for the insert. If omitted, all columns must be provided in order.
+</ParamField>
+
+<ParamField path="value" type="expression" required>
+  Values to insert. Can be literals, expressions, or NULL.
+</ParamField>
+
+## Basic INSERT
+
+### Insert Single Row
+
+```sql
+CREATE TABLE users (
+  id integer,
+  name text,
+  email text
+);
+
+INSERT INTO users VALUES (1, 'Alice', 'alice@example.com');
+```
+
+### Insert Multiple Rows
+
+```sql
+INSERT INTO users VALUES
+  (2, 'Bob', 'bob@example.com'),
+  (3, 'Charlie', 'charlie@example.com'),
+  (4, 'Diana', 'diana@example.com');
+```
+
+## Column Specification
+
+### Specify Columns
+
+```sql
+-- Specify column order
+INSERT INTO users (name, id, email)
+VALUES ('Eve', 5, 'eve@example.com');
+```
+
+### Partial Columns
+
+```sql
+CREATE TABLE products (
+  id integer NOT NULL,
+  name text NOT NULL,
+  description text,
+  price numeric
+);
+
+-- Only provide required columns
+INSERT INTO products (id, name)
+VALUES (1, 'Widget');
+-- description and price will be NULL
+```
+
+## INSERT with NULL Values
+
+```sql
+CREATE TABLE events (
+  id integer NOT NULL,
+  event_type text NOT NULL,
+  metadata jsonb
+);
+
+INSERT INTO events VALUES
+  (1, 'login', '{"ip": "192.168.1.1"}'::jsonb),
+  (2, 'logout', NULL);  -- NULL metadata
+```
+
+## INSERT with DEFAULT Values
+
+```sql
+CREATE TABLE logs (
+  id integer NOT NULL,
+  message text NOT NULL,
+  created_at timestamp DEFAULT now()
+);
+
+-- created_at will use DEFAULT value
+INSERT INTO logs (id, message)
+VALUES (1, 'Application started');
+
+-- Explicitly use DEFAULT
+INSERT INTO logs VALUES (2, 'User logged in', DEFAULT);
+```
+
+## INSERT ... SELECT
+
+Insert results from a query:
+
+```sql
+CREATE TABLE customers (
+  id integer,
+  name text,
+  email text
+);
+
+CREATE TABLE archived_customers (
+  id integer,
+  name text,
+  email text,
+  archived_date date
+);
+
+-- Insert from SELECT
+INSERT INTO archived_customers (id, name, email)
+SELECT id, name, email
+FROM customers
+WHERE last_order_date < '2020-01-01';
+```
+
+### INSERT with Transformation
+
+```sql
+CREATE TABLE user_summary (
+  user_id integer,
+  order_count integer,
+  total_spent numeric
+);
+
+INSERT INTO user_summary
+SELECT
+  customer_id,
+  COUNT(*) as order_count,
+  SUM(amount) as total_spent
+FROM orders
+GROUP BY customer_id;
+```
+
+## Examples
+
+### Load Dimensional Data
+
+```sql
+CREATE TABLE product_categories (
+  category_id integer NOT NULL,
+  category_name text NOT NULL,
+  description text
+);
+
+INSERT INTO product_categories VALUES
+  (1, 'Electronics', 'Electronic devices and accessories'),
+  (2, 'Clothing', 'Apparel and fashion'),
+  (3, 'Home & Garden', 'Home improvement and garden supplies'),
+  (4, 'Books', 'Physical and digital books');
+```
+
+### Insert Complex Types
+
+```sql
+CREATE TABLE user_profiles (
+  user_id integer NOT NULL,
+  preferences jsonb,
+  tags text[]
+);
+
+INSERT INTO user_profiles VALUES
+  (
+    1,
+    '{"theme": "dark", "language": "en", "notifications": true}'::jsonb,
+    ARRAY['premium', 'verified', 'early-adopter']
+  );
+```
+
+### Insert from Another Table
+
+```sql
+CREATE TABLE daily_metrics (
+  date date,
+  metric_name text,
+  value numeric
+);
+
+CREATE TABLE monthly_metrics (
+  month date,
+  metric_name text,
+  total_value numeric
+);
+
+-- Aggregate and insert
+INSERT INTO monthly_metrics
+SELECT
+  date_trunc('month', date) as month,
+  metric_name,
+  SUM(value) as total_value
+FROM daily_metrics
+GROUP BY month, metric_name;
+```
+
+### Bulk Load from External Data
+
+```sql
+-- Assuming you have a temporary source
+CREATE SOURCE csv_import
+  FROM LOAD GENERATOR COUNTER;
+
+INSERT INTO target_table (col1, col2, col3)
+SELECT
+  field1,
+  field2,
+  field3
+FROM csv_import;
+```
+
+## Known Limitations
+
+<Warning>
+  **Performance Limitations:**
+  - INSERT has low performance compared to sources
+  - Blocks other INSERT, UPDATE, DELETE operations
+  - Not optimized for high-throughput writes
+</Warning>
+
+### INSERT ... SELECT Restrictions
+
+```sql
+-- Cannot reference sources directly
+INSERT INTO my_table
+SELECT * FROM kafka_source;  -- ERROR
+
+-- Can only reference tables
+INSERT INTO my_table
+SELECT * FROM other_table;  -- OK
+```
+
+### No Transaction Support
+
+```sql
+-- This will fail
+BEGIN;
+INSERT INTO users VALUES (1, 'Alice', 'alice@example.com');
+COMMIT;  -- ERROR: INSERT cannot be used in transactions
+```
+
+## Best Practices
+
+1. **Use for Dimensional Data**
+   ```sql
+   -- Good: Small reference tables
+   INSERT INTO countries VALUES
+     ('US', 'United States'),
+     ('CA', 'Canada'),
+     ('MX', 'Mexico');
+   ```
+
+2. **Batch Multiple Rows**
+   ```sql
+   -- Better: Single INSERT with multiple rows
+   INSERT INTO logs VALUES
+     (1, 'Message 1'),
+     (2, 'Message 2'),
+     (3, 'Message 3');
+   
+   -- Avoid: Multiple single-row INSERTs
+   INSERT INTO logs VALUES (1, 'Message 1');
+   INSERT INTO logs VALUES (2, 'Message 2');
+   INSERT INTO logs VALUES (3, 'Message 3');
+   ```
+
+3. **Specify Columns**
+   ```sql
+   -- Good: Explicit columns
+   INSERT INTO users (id, name) VALUES (1, 'Alice');
+   
+   -- Risky: Relying on column order
+   INSERT INTO users VALUES (1, 'Alice', NULL, NULL);
+   ```
+
+4. **Use Sources for High Volume**
+   ```sql
+   -- For high-throughput data, use sources instead
+   CREATE SOURCE events
+     FROM KAFKA CONNECTION kafka_conn (TOPIC 'events')
+     FORMAT JSON;
+   ```
+
+5. **Check Constraints**
+   ```sql
+   -- Ensure NOT NULL columns are provided
+   INSERT INTO users (id, name, email)  -- All NOT NULL
+   VALUES (1, 'Alice', 'alice@example.com');
+   ```
+
+## Alternatives for High-Volume Data
+
+For high-volume data ingestion, use sources:
+
+```sql
+-- Instead of many INSERTs, use a source
+CREATE SOURCE orders_stream
+  FROM KAFKA CONNECTION kafka_conn (TOPIC 'orders')
+  FORMAT JSON;
+
+CREATE MATERIALIZED VIEW orders AS
+  SELECT
+    (data->>'order_id')::integer as order_id,
+    (data->>'customer_id')::integer as customer_id,
+    (data->>'amount')::numeric as amount
+  FROM orders_stream;
+```
+
+## Related Pages
+
+- [CREATE TABLE](/sql/create-table)
+- [UPDATE](/sql/update)
+- [DELETE](/sql/delete)
+- [SELECT](/sql/select)
+- [CREATE SOURCE](/sql/create-source)

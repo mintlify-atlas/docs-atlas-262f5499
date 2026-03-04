@@ -1,0 +1,506 @@
+---
+title: Index Operations
+description: Learn when to create indexes, how to maintain them, and best practices for index design in Materialize.
+---
+
+## Overview
+
+Indexes in Materialize represent query results stored in memory within a cluster. Unlike traditional databases, Materialize indexes maintain complete, up-to-date results—not just keys and pointers. This guide covers when to create indexes, how to optimize them, and operational best practices.
+
+## Understanding Indexes
+
+### What Indexes Store
+
+Indexes maintain:
+- Complete, up-to-date query results in memory
+- Incrementally updated data as new information arrives
+- Results scoped to a specific cluster
+
+### Indexes vs. Materialized Views
+
+| Feature | Index | Materialized View |
+|---------|-------|-------------------|
+| Storage | In-memory (cluster-local) | Durable storage (system-wide) |
+| Access | Same cluster only | Any cluster |
+| Use case | Fast queries within cluster | Share results across clusters |
+| Query cost | Computationally free | Computationally free |
+| Query speed | Fastest (from memory) | Fast (from storage) |
+
+**Rule of thumb**: Use indexes for cluster-local query acceleration. Use materialized views when results need to be shared across multiple clusters.
+
+## When to Create Indexes
+
+### On Sources
+
+Rarely needed. Consider indexing a source when:
+- Serving results directly from the source
+- Using the source in joins without transformation
+
+```sql
+CREATE INDEX idx_kafka_source ON my_kafka_source (key_column);
+```
+
+In practice, you'll typically create views that transform sources and index those views instead.
+
+### On Views
+
+Create indexes on views to maintain up-to-date results in memory:
+
+```sql
+CREATE VIEW active_orders AS
+  SELECT * FROM orders
+  WHERE status = 'active';
+
+-- Index the view for fast queries
+CREATE INDEX idx_active_orders ON active_orders (customer_id);
+```
+
+During index creation:
+1. View is executed and results stored in memory
+2. As new data arrives, results update incrementally
+3. Queries are served instantly from memory with no computation
+
+### On Materialized Views
+
+Indexing a materialized view loads durable results into memory:
+
+```sql
+CREATE MATERIALIZED VIEW order_totals AS
+  SELECT customer_id, SUM(amount) AS total
+  FROM orders
+  GROUP BY customer_id;
+
+-- Index for faster in-memory access
+CREATE INDEX idx_order_totals ON order_totals (customer_id);
+```
+
+**Benefits**:
+- Materialized views are queryable from any cluster
+- Indexes provide faster access within the cluster where created
+- No additional computation required (results already maintained)
+
+## Creating Indexes
+
+### Basic Index Creation
+
+Create an index on specific columns:
+
+```sql
+CREATE INDEX idx_orders_customer 
+ON orders (customer_id);
+```
+
+### Multi-Column Indexes
+
+Index multiple columns for complex queries:
+
+```sql
+CREATE INDEX idx_orders_customer_status 
+ON orders (customer_id, status);
+```
+
+### Expression Indexes
+
+Index computed expressions:
+
+```sql
+CREATE INDEX idx_orders_total 
+ON orders (quantity * price);
+
+CREATE INDEX idx_customers_upper_name 
+ON customers (upper(name));
+```
+
+### Default Indexes
+
+Create an index using inferred unique keys:
+
+```sql
+CREATE DEFAULT INDEX ON my_view;
+```
+
+Materialize uses the view's unique key (if available) as the index key. If no unique key exists, all columns are used.
+
+### Cluster-Specific Indexes
+
+Explicitly specify the target cluster:
+
+```sql
+CREATE INDEX idx_orders 
+IN CLUSTER serving 
+ON orders (customer_id);
+```
+
+**Remember**: Indexes are cluster-local. Queries from other clusters cannot use them.
+
+## Index Usage Patterns
+
+### Point Lookups
+
+Materialize performs **point lookups** (reads only matching records) when the query's `WHERE` clause:
+
+1. Specifies equality (`=` or `IN`) on **all** indexed fields
+2. Uses only `AND` to combine conditions
+3. Matches the exact indexed expression (including type)
+
+```sql
+-- Create index
+CREATE INDEX idx_orders_qty ON orders (quantity);
+
+-- Point lookup (fast)
+SELECT * FROM orders WHERE quantity = 10;
+
+-- Point lookup with IN (fast)
+SELECT * FROM orders WHERE quantity IN (5, 10, 15);
+
+-- Full scan (slower)
+SELECT * FROM orders WHERE quantity > 10;
+```
+
+### Multi-Column Point Lookups
+
+```sql
+-- Create multi-column index
+CREATE INDEX idx_orders_customer_status 
+ON orders (customer_id, status);
+
+-- Point lookup (fast)
+SELECT * FROM orders 
+WHERE customer_id = 123 AND status = 'shipped';
+
+-- Partial point lookup (filters on customer_id, scans status)
+SELECT * FROM orders 
+WHERE customer_id = 123;
+
+-- Full scan (slower)
+SELECT * FROM orders 
+WHERE status = 'shipped';
+```
+
+### Expression Matching
+
+For expression indexes, queries must match exactly:
+
+```sql
+-- Index on expression
+CREATE INDEX idx_orders_total ON orders (quantity * price);
+
+-- Point lookup (fast) - exact match
+SELECT * FROM orders WHERE quantity * price = 100;
+
+-- Full scan (slower) - different expression
+SELECT * FROM orders WHERE price * quantity = 100;
+```
+
+### Index Scans
+
+Materialize performs full index scans when:
+- Not all indexed fields are specified
+- Using non-equality conditions (`>`, `<`, `LIKE`)
+- Using `OR` between different fields
+- Type mismatch in equality conditions
+
+```sql
+CREATE INDEX idx_orders_qty_price ON orders (quantity, price);
+
+-- Full scan - only one indexed field specified
+SELECT * FROM orders WHERE quantity = 10;
+
+-- Full scan - range query
+SELECT * FROM orders WHERE quantity > 10 AND price > 5;
+
+-- Full scan - OR between different fields  
+SELECT * FROM orders WHERE quantity = 10 OR price = 5;
+```
+
+## Verifying Index Usage
+
+Use `EXPLAIN` to verify how queries use indexes:
+
+```sql
+EXPLAIN SELECT * FROM orders WHERE customer_id = 123;
+```
+
+**Point lookup output**:
+```
+Explained Query (fast path):
+  ReadIndex on=orders idx_orders_customer=[lookup value=(123)]
+
+Used Indexes:
+  - idx_orders_customer (lookup)
+```
+
+Look for:
+- `lookup value=` indicates point lookup (fastest)
+- `(lookup)` in Used Indexes section
+- `fast path` means query executes outside regular dataflow
+
+**Full scan output**:
+```
+Used Indexes:
+  - idx_orders_customer (scan)
+```
+
+## Index Maintenance
+
+### Monitoring Index Memory Usage
+
+Check memory consumption by index:
+
+```sql
+SELECT 
+  i.name AS index_name,
+  c.name AS cluster_name,
+  SUM(s.size_bytes) / (1024.0 * 1024.0 * 1024.0) AS size_gb
+FROM mz_indexes i
+JOIN mz_clusters c ON i.cluster_id = c.id
+JOIN mz_internal.mz_storage_usage s ON i.id = s.object_id
+GROUP BY i.name, c.name
+ORDER BY size_gb DESC;
+```
+
+### Viewing All Indexes
+
+List indexes with their configuration:
+
+```sql
+SELECT 
+  i.name AS index_name,
+  c.name AS cluster_name,
+  obj.name AS on_object,
+  i.create_sql
+FROM mz_indexes i
+JOIN mz_clusters c ON i.cluster_id = c.id
+JOIN mz_objects obj ON i.on_id = obj.id
+ORDER BY c.name, i.name;
+```
+
+### Viewing Index Keys
+
+Inspect index column definitions:
+
+```sql
+SELECT 
+  i.name AS index_name,
+  ic.index_position,
+  ic.on_position,
+  ic.on_expression,
+  ic.nullable
+FROM mz_index_columns ic
+JOIN mz_indexes i ON ic.index_id = i.id
+WHERE i.name = 'idx_orders_customer'
+ORDER BY ic.index_position;
+```
+
+### Dropping Unused Indexes
+
+Remove indexes to free memory:
+
+```sql
+DROP INDEX idx_orders_customer;
+```
+
+**Important**: Dropping an index that other queries depend on will force those queries to recompute results or use alternative indexes.
+
+### Rebuilding Indexes
+
+To rebuild an index with a different configuration:
+
+```sql
+-- Drop existing index
+DROP INDEX idx_orders_old;
+
+-- Create new index with updated keys
+CREATE INDEX idx_orders_new ON orders (new_column);
+```
+
+## Optimization Strategies
+
+### Point Lookup Optimization
+
+Design indexes for equality-based queries:
+
+```sql
+-- Query pattern
+SELECT * FROM orders WHERE customer_id = ? AND status = ?;
+
+-- Optimized index (either column order works)
+CREATE INDEX idx_orders_customer_status 
+ON orders (customer_id, status);
+
+-- OR
+CREATE INDEX idx_orders_status_customer 
+ON orders (status, customer_id);
+```
+
+### Join Optimization
+
+Index join keys to accelerate joins:
+
+```sql
+CREATE VIEW customer_orders AS
+  SELECT c.name, o.total
+  FROM customers c
+  JOIN orders o ON c.id = o.customer_id;
+
+-- Index the join key on both sides
+CREATE INDEX idx_customers_id ON customers (id);
+CREATE INDEX idx_orders_customer_id ON orders (customer_id);
+
+-- Now index the joined view for fast queries
+CREATE INDEX idx_customer_orders ON customer_orders (name);
+```
+
+### Shared Indexes
+
+Multiple queries can share the same index:
+
+```sql
+-- Index shared by multiple queries
+CREATE INDEX idx_orders_customer ON orders (customer_id);
+
+-- Query 1 uses index
+SELECT * FROM orders WHERE customer_id = 123;
+
+-- Query 2 also uses same index
+SELECT COUNT(*) FROM orders WHERE customer_id = 456;
+```
+
+**Benefit**: Fixed upfront memory cost with savings for each additional query.
+
+## Memory Management
+
+### Understanding Memory Footprint
+
+Index memory usage is proportional to:
+- Current size of the indexed data
+- Number of columns stored
+- Data types (complex types use more memory)
+- Compaction rate
+
+### Estimating Index Size
+
+Rough estimation:
+```
+Index Size ≈ Source Data Size × (1 + Storage Overhead)
+```
+
+Storage overhead typically ranges from 20-50% depending on data types and compaction.
+
+### Memory Best Practices
+
+1. **Index selectively**: Don't index everything—only what queries actually use
+2. **Use narrow indexes**: Include only necessary columns in keys
+3. **Share indexes**: Design indexes that multiple queries can use
+4. **Monitor usage**: Regularly review which indexes are actually used
+5. **Consider materialized views**: For cross-cluster access, use materialized views instead
+
+### Identifying Large Indexes
+
+```sql
+SELECT 
+  i.name,
+  c.name AS cluster,
+  m.memory_bytes / (1024.0 * 1024.0 * 1024.0) AS memory_gb
+FROM mz_indexes i
+JOIN mz_clusters c ON i.cluster_id = c.id
+JOIN mz_internal.mz_cluster_replica_metrics m 
+  ON c.id = (SELECT cluster_id FROM mz_cluster_replicas WHERE id = m.replica_id)
+GROUP BY i.name, c.name, m.memory_bytes
+ORDER BY memory_gb DESC
+LIMIT 10;
+```
+
+## Best Practices
+
+### Index Design
+
+1. **Match query patterns**: Index columns that appear in `WHERE` clauses
+2. **Exact expression matching**: Ensure indexed expressions match query expressions exactly
+3. **Consider cardinality**: High-cardinality columns make better index keys
+4. **Order matters for partial lookups**: First columns in multi-column indexes are most important
+
+### Operational Guidelines
+
+1. **Start minimal**: Create indexes only when performance testing reveals the need
+2. **Use EXPLAIN**: Always verify queries use indexes as expected
+3. **Monitor memory**: Track index memory usage relative to cluster capacity
+4. **Cluster sizing**: Ensure clusters have sufficient memory for all indexes
+5. **Document purpose**: Maintain documentation about why each index exists
+
+### Development Workflow
+
+1. **Develop without indexes**: Write queries first
+2. **Identify slow queries**: Use query profiling to find bottlenecks
+3. **Create targeted indexes**: Add indexes for specific performance problems
+4. **Verify improvement**: Measure query performance before and after
+5. **Clean up**: Remove indexes that don't provide measurable benefit
+
+## Troubleshooting
+
+### Query Not Using Index
+
+**Symptoms**: Slow query despite having an index
+
+**Diagnosis**:
+```sql
+EXPLAIN SELECT * FROM orders WHERE customer_id = 123;
+```
+
+**Common causes**:
+1. Query runs in different cluster than index
+2. Index keys don't match query conditions
+3. Type mismatch in WHERE clause
+4. Query uses OR between different fields
+
+**Solution**: Verify cluster, check index keys match exactly, adjust query or index.
+
+### High Memory Usage
+
+**Symptoms**: Cluster running out of memory
+
+**Diagnosis**:
+```sql
+SELECT 
+  COUNT(*) AS index_count,
+  SUM(size_bytes) / (1024.0 * 1024.0 * 1024.0) AS total_gb
+FROM mz_internal.mz_storage_usage
+WHERE object_id IN (SELECT id FROM mz_indexes);
+```
+
+**Solution**: Drop unused indexes, increase cluster size, or use materialized views for shared data.
+
+### Slow Index Creation
+
+**Symptoms**: `CREATE INDEX` takes a long time
+
+**Cause**: Initial hydration computing all historical results
+
+**Solution**: 
+- Create indexes during low-traffic periods
+- Ensure sufficient cluster resources
+- Consider creating indexes in stages for very large datasets
+
+## Advanced Topics
+
+### Indexes and Arrangements
+
+Internally, indexes use arrangements—Materialize's optimized data structures. The system automatically:
+- Shares arrangements between operators
+- Compacts data to reduce memory
+- Maintains delta updates for efficiency
+
+### Index Ordering Limitations
+
+Materialize does not use index key order for:
+- `ORDER BY` clauses
+- Range queries
+- Sorted merges
+
+Indexes are optimized for equality lookups and full scans, not ordered access.
+
+## Related Topics
+
+- [Cluster Operations](/operations/clusters)
+- [Performance Tuning](/operations/performance)
+- [Query Optimization Best Practices](/operations/performance#query-optimization)

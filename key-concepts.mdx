@@ -1,0 +1,724 @@
+---
+title: "Key Concepts"
+description: "Understand the core concepts of Materialize: sources, views, materialized views, indexes, clusters, and sinks."
+---
+
+## Overview
+
+Materialize has six fundamental concepts that work together to provide real-time data transformation:
+
+<CardGroup cols={3}>
+  <Card title="Sources" icon="download">
+    External systems from which Materialize reads data
+  </Card>
+  
+  <Card title="Views" icon="eye">
+    Named SQL queries for data transformation
+  </Card>
+  
+  <Card title="Materialized Views" icon="database">
+    Views with results persisted in durable storage
+  </Card>
+  
+  <Card title="Indexes" icon="bolt">
+    Query results stored in memory for fast access
+  </Card>
+  
+  <Card title="Clusters" icon="server">
+    Isolated pools of compute resources
+  </Card>
+  
+  <Card title="Sinks" icon="upload">
+    Connections to push data to external systems
+  </Card>
+</CardGroup>
+
+Let's explore each concept in detail.
+
+---
+
+## Sources
+
+Sources describe external systems you want Materialize to read data from and provide details about how to decode and interpret that data.
+
+### Mental Model
+
+Think of sources as a combination of:
+- **Tables** — they're structured components you can read from
+- **Clients** — they're responsible for reading data from external systems
+
+### Source Components
+
+Every source consists of three components:
+
+| Component | Purpose | Example |
+|-----------|---------|----------|
+| **Connector** | Provides the actual bytes of data to Materialize | Kafka, PostgreSQL, MySQL |
+| **Format** | Defines how to structure the external data (schema) | Avro, JSON, Protobuf, CSV |
+| **Envelope** | Specifies how Materialize should handle incoming data | Upsert, Debezium, Append-only |
+
+### Supported Connectors
+
+Materialize provides native connectors for:
+
+<CardGroup cols={2}>
+  <Card title="PostgreSQL" icon="database">
+    Read data via logical replication (CDC)
+  </Card>
+  
+  <Card title="MySQL" icon="database">
+    Read data via binary log replication (CDC)
+  </Card>
+  
+  <Card title="Kafka & Redpanda" icon="stream">
+    Read from Kafka topics in real-time
+  </Card>
+  
+  <Card title="SQL Server" icon="database">
+    Read data via change data capture (CDC)
+  </Card>
+  
+  <Card title="Webhooks" icon="webhook">
+    Ingest data from SaaS applications via HTTP
+  </Card>
+  
+  <Card title="Load Generators" icon="flask">
+    Generate sample data for testing
+  </Card>
+</CardGroup>
+
+### Creating a Source
+
+<Tabs>
+  <Tab title="PostgreSQL">
+    ```mzsql
+    CREATE SECRET pgpass AS 'your_password';
+    
+    CREATE CONNECTION pg_connection TO POSTGRES (
+      HOST 'postgres.example.com',
+      PORT 5432,
+      USER 'materialize',
+      PASSWORD SECRET pgpass,
+      DATABASE 'myapp'
+    );
+    
+    CREATE SOURCE pg_source
+      FROM POSTGRES CONNECTION pg_connection
+      (PUBLICATION 'mz_source')
+      FOR ALL TABLES;
+    ```
+  </Tab>
+  
+  <Tab title="MySQL">
+    ```mzsql
+    CREATE SECRET mysql_password AS 'your_password';
+    
+    CREATE CONNECTION mysql_connection TO MYSQL (
+      HOST 'mysql.example.com',
+      PORT 3306,
+      USER 'materialize',
+      PASSWORD SECRET mysql_password
+    );
+    
+    CREATE SOURCE mysql_source
+      FROM MYSQL CONNECTION mysql_connection
+      FOR ALL TABLES;
+    ```
+  </Tab>
+  
+  <Tab title="Kafka">
+    ```mzsql
+    CREATE CONNECTION kafka_connection TO KAFKA (
+      BROKER 'kafka.example.com:9092',
+      SECURITY PROTOCOL SASL_SSL,
+      SASL MECHANISMS 'PLAIN',
+      SASL USERNAME 'user',
+      SASL PASSWORD SECRET kafka_password
+    );
+    
+    CREATE SOURCE kafka_source
+      FROM KAFKA CONNECTION kafka_connection
+      (TOPIC 'orders')
+      FORMAT JSON;
+    ```
+  </Tab>
+  
+  <Tab title="Webhook">
+    ```mzsql
+    CREATE SOURCE webhook_source
+      IN CLUSTER ingestion_cluster
+      FROM WEBHOOK
+      BODY FORMAT JSON;
+    
+    -- Get the webhook URL
+    SHOW CREATE SOURCE webhook_source;
+    ```
+  </Tab>
+</Tabs>
+
+### Subsources
+
+When you create a source from a system with multiple tables (like PostgreSQL or MySQL), Materialize creates **subsources** — one for each upstream table.
+
+```mzsql
+-- This creates multiple subsources
+CREATE SOURCE pg_source
+  FROM POSTGRES CONNECTION pg_connection
+  FOR ALL TABLES;
+
+-- View all created subsources
+SHOW SOURCES;
+```
+
+Subsources are:
+- **Write-only** by the source (only the source can write to them)
+- **Readable** by users (you can query them like tables)
+
+### Sources and Clusters
+
+Sources require compute resources, so they must be associated with a [cluster](#clusters).
+
+<Note>
+**Best Practice**: In production, dedicate a separate cluster just for sources. This isolates ingestion workloads from transformation and serving workloads.
+</Note>
+
+---
+
+## Views
+
+Views represent queries saved under a name for reference. They provide a shorthand for underlying SQL queries.
+
+### How Views Work
+
+```mzsql
+CREATE VIEW revenue_by_region AS
+SELECT 
+  region,
+  SUM(order_total) AS total_revenue,
+  COUNT(*) AS order_count
+FROM orders
+GROUP BY region;
+```
+
+Key characteristics:
+- The query is **not executed** during view creation
+- Results are **recomputed from scratch** each time you query the view
+- Views are **not associated with a cluster** and can be referenced anywhere
+
+### Indexed Views
+
+In Materialize, you can create an [index](#indexes) on a view to keep results incrementally updated in memory:
+
+```mzsql
+CREATE INDEX idx_revenue ON revenue_by_region (region);
+```
+
+Now:
+- The query is executed and results are stored **in memory**
+- As new data arrives, results are **incrementally updated**
+- Queries read from memory — making them **fast and computationally free**
+
+<Note>
+Indexes are local to a cluster. An indexed view's results are only available in the cluster where the index was created.
+</Note>
+
+---
+
+## Materialized Views
+
+Materialized views are views whose results are **persisted in durable storage** and **incrementally updated** as new data arrives.
+
+### Creating Materialized Views
+
+```mzsql
+CREATE MATERIALIZED VIEW top_customers AS
+SELECT 
+  customer_id,
+  customer_name,
+  SUM(order_total) AS lifetime_value,
+  COUNT(*) AS order_count
+FROM orders
+JOIN customers USING (customer_id)
+GROUP BY customer_id, customer_name
+ORDER BY lifetime_value DESC;
+```
+
+Key characteristics:
+- Query is **executed during creation**
+- Results are **stored in durable storage** (not just memory)
+- Results are **incrementally updated** as data changes
+- Can be **queried from any cluster** (cross-cluster access)
+
+### Hydration
+
+Materialized views undergo **hydration** when:
+- The view is first created
+- Its cluster is restarted
+
+Hydration reconstructs in-memory state by reading from storage (not from upstream systems).
+
+<Warning>
+During hydration, materialized views require memory proportional to both the input and output. Consider this when sizing clusters.
+</Warning>
+
+### Indexes on Materialized Views
+
+You can index materialized views to make results available in memory within a specific cluster:
+
+```mzsql
+CREATE INDEX idx_top_customers ON top_customers (customer_id);
+```
+
+Since materialized views already maintain up-to-date results in storage, indexes on them:
+- Require **no additional computation** to stay current
+- Simply make results available **in memory** for faster access
+- Are useful in serving clusters that need low-latency access
+
+<Note>
+Querying a materialized view is computationally free from any cluster (indexed or not). However, querying an indexed materialized view from the cluster with the index is faster because results are served from memory instead of storage.
+</Note>
+
+---
+
+## Indexes
+
+Indexes represent query results stored **in memory within a cluster**. They enable fast, computationally-free queries by maintaining incrementally updated results.
+
+### How Indexes Work
+
+When you create an index:
+
+1. The underlying query is **executed**
+2. Results are **stored in memory** within the cluster
+3. As new data arrives, results are **incrementally updated**
+4. Queries read from memory — making them **instant and free**
+
+### Creating Indexes
+
+<Tabs>
+  <Tab title="On Views">
+    ```mzsql
+    CREATE VIEW order_summary AS
+    SELECT 
+      order_id,
+      order_date,
+      customer_id,
+      SUM(quantity * price) AS total
+    FROM order_items
+    GROUP BY order_id, order_date, customer_id;
+    
+    -- Create index in current cluster
+    CREATE INDEX idx_orders ON order_summary (customer_id);
+    
+    -- Or specify cluster explicitly
+    CREATE INDEX idx_orders 
+      IN CLUSTER serving_cluster 
+      ON order_summary (customer_id);
+    ```
+  </Tab>
+  
+  <Tab title="On Materialized Views">
+    ```mzsql
+    CREATE MATERIALIZED VIEW daily_revenue AS
+    SELECT 
+      DATE(order_time) AS date,
+      SUM(total) AS revenue
+    FROM orders
+    GROUP BY DATE(order_time);
+    
+    -- Index for serving cluster
+    CREATE INDEX idx_daily_revenue 
+      IN CLUSTER serving_cluster
+      ON daily_revenue (date);
+    ```
+  </Tab>
+  
+  <Tab title="On Sources">
+    ```mzsql
+    -- Less common, but possible
+    CREATE INDEX idx_raw_orders 
+      ON orders_source (customer_id);
+    ```
+    
+    <Note>
+    Indexing sources directly is uncommon. You typically transform data with views first.
+    </Note>
+  </Tab>
+</Tabs>
+
+### How Materialize Uses Indexes
+
+Unlike traditional databases, Materialize can use an index to serve queries **even without** `WHERE` conditions on indexed columns.
+
+Consider this index:
+
+```mzsql
+CREATE INDEX idx_orders ON orders_view (customer_id);
+```
+
+Materialize will use this index for **all** of these queries:
+
+| Query | Index Usage |
+|-------|-------------|
+| `SELECT * FROM orders_view` | **Full scan** of the index |
+| `SELECT * FROM orders_view WHERE status = 'shipped'` | **Full scan** + filter |
+| `SELECT * FROM orders_view WHERE customer_id = 123` | **Point lookup** (fastest) |
+| `SELECT * FROM orders_view WHERE customer_id IN (123, 456)` | **Point lookup** |
+
+### Point Lookups
+
+**Point lookups** are the most efficient index usage. Materialize performs a point lookup when:
+
+- The `WHERE` clause uses **equality** (`=` or `IN`) on **all** indexed columns
+- **Only** `AND` is used to combine conditions (no `OR`)
+- The condition uses the **exact** expression type from the index
+
+<CodeGroup>
+```mzsql Point Lookup (Fast)
+SELECT * FROM orders_view 
+WHERE customer_id = 123;
+```
+
+```mzsql Full Scan (Slower)
+SELECT * FROM orders_view 
+WHERE customer_id > 100;
+```
+</CodeGroup>
+
+### Multi-Column Indexes
+
+For point lookups on multi-column indexes, you must specify **all** columns:
+
+```mzsql
+CREATE INDEX idx_orders_region ON orders_view (region, status);
+
+-- Point lookup (uses index efficiently)
+SELECT * FROM orders_view 
+WHERE region = 'US' AND status = 'shipped';
+
+-- Full scan (missing status column)
+SELECT * FROM orders_view 
+WHERE region = 'US';
+```
+
+### Indexes and Query Optimization
+
+Indexes help optimize:
+
+- **Sequential access** — faster than scanning unindexed data
+- **Random access** — fast point lookups for specific keys
+- **Join operations** — delta joins use indexes for efficiency
+- **Ad-hoc queries** — even queries not optimized for the index benefit
+
+---
+
+## Clusters
+
+Clusters are isolated pools of **compute resources** (CPU, memory, and scratch disk space) for running your workloads.
+
+### What Requires a Cluster?
+
+The following operations need compute resources and must be associated with a cluster:
+
+- Maintaining [sources](#sources) and [sinks](#sinks)
+- Maintaining [indexes](#indexes) and [materialized views](#materialized-views)
+- Executing `SELECT` and `SUBSCRIBE` statements
+
+### Resource Isolation
+
+Clusters provide **complete resource isolation**:
+
+- Each cluster has dedicated CPU, memory, and disk
+- Workloads on different clusters can't affect each other
+- Clusters can fail independently
+
+```mzsql
+-- Create clusters for different workloads
+CREATE CLUSTER ingestion SIZE '100cc';
+CREATE CLUSTER transformation SIZE '200cc';
+CREATE CLUSTER serving SIZE '50cc', REPLICATION FACTOR 2;
+```
+
+### Cluster Sizing
+
+Cluster size determines:
+- Resource allocation (CPU, memory, disk)
+- Processing speed
+- Cost
+
+Common sizes: `25cc`, `50cc`, `100cc`, `200cc`, `400cc`, etc.
+
+<Tip>
+You can resize clusters as your workload changes:
+
+```mzsql
+ALTER CLUSTER serving SET (SIZE = '100cc');
+```
+</Tip>
+
+### Replication Factor
+
+The replication factor determines fault tolerance:
+
+```mzsql
+CREATE CLUSTER serving 
+  SIZE '100cc',
+  REPLICATION FACTOR 2;  -- Creates 2 replicas
+```
+
+With multiple replicas:
+- Each replica does the same work on the same data
+- Provides high availability if one replica fails
+- Increases cost proportionally (2 replicas = 2× cost)
+
+<Note>
+Materialize automatically spreads replicas across availability zones for maximum fault tolerance.
+</Note>
+
+### Three-Tier Architecture (Production Best Practice)
+
+For production workloads, use separate clusters:
+
+<Steps>
+  <Step title="Source Cluster(s)">
+    Dedicated to data ingestion from external systems.
+    
+    ```mzsql
+    CREATE CLUSTER ingestion SIZE '100cc';
+    
+    CREATE SOURCE pg_source
+      IN CLUSTER ingestion
+      FROM POSTGRES CONNECTION pg_conn
+      FOR ALL TABLES;
+    ```
+  </Step>
+  
+  <Step title="Compute/Transformation Cluster(s)">
+    Dedicated to maintaining materialized views and complex transformations.
+    
+    ```mzsql
+    CREATE CLUSTER transformation SIZE '200cc';
+    
+    CREATE MATERIALIZED VIEW revenue_rollup
+      IN CLUSTER transformation
+    AS
+      SELECT region, DATE(order_time) AS date, SUM(total)
+      FROM orders
+      GROUP BY region, DATE(order_time);
+    ```
+  </Step>
+  
+  <Step title="Serving Cluster(s)">
+    Dedicated to serving queries with indexes on materialized views.
+    
+    ```mzsql
+    CREATE CLUSTER serving 
+      SIZE '100cc',
+      REPLICATION FACTOR 2;
+    
+    -- Index the materialized view in serving cluster
+    CREATE INDEX idx_revenue
+      IN CLUSTER serving
+      ON revenue_rollup (region, date);
+    ```
+  </Step>
+</Steps>
+
+This architecture provides:
+- **Isolation** — ingestion issues don't affect query serving
+- **Scalability** — size each tier independently
+- **Availability** — replicate serving clusters for high availability
+
+---
+
+## Sinks
+
+Sinks are the inverse of sources — they represent connections to external systems where Materialize **outputs** data.
+
+### What Can You Sink?
+
+You can create sinks from:
+- **Materialized views**
+- **Sources**
+- **Tables**
+
+<Warning>
+You can **only** sink materialized objects. You cannot sink regular views directly.
+</Warning>
+
+### Supported Sink Types
+
+<Tabs>
+  <Tab title="Kafka">
+    Stream changes to a Kafka topic:
+    
+    ```mzsql
+    CREATE SINK kafka_sink
+      FROM revenue_by_region
+      INTO KAFKA CONNECTION kafka_conn
+      (TOPIC 'revenue-updates')
+      FORMAT JSON
+      ENVELOPE DEBEZIUM;
+    ```
+  </Tab>
+  
+  <Tab title="SUBSCRIBE">
+    Stream changes via SQL connection:
+    
+    ```mzsql
+    -- Not technically a sink, but serves the same purpose
+    SUBSCRIBE TO (
+      SELECT * FROM revenue_by_region
+    );
+    ```
+    
+    Returns changes as they happen in real-time.
+  </Tab>
+</Tabs>
+
+### Sinks and Clusters
+
+<Note>
+**Best Practice**: Avoid putting sinks on the same cluster that hosts sources. Separate ingestion and egress workloads for better isolation.
+</Note>
+
+### Hydration Considerations
+
+During creation, Kafka sinks need to load an entire snapshot of the data in memory. Ensure your cluster has sufficient memory.
+
+---
+
+## Putting It All Together
+
+Here's a complete example showing how all concepts work together:
+
+```mzsql
+-- 1. Create clusters for different workloads
+CREATE CLUSTER ingestion SIZE '100cc';
+CREATE CLUSTER compute SIZE '200cc';
+CREATE CLUSTER serving SIZE '100cc', REPLICATION FACTOR 2;
+
+-- 2. Create a source in the ingestion cluster
+CREATE SOURCE orders_source
+  IN CLUSTER ingestion
+  FROM POSTGRES CONNECTION pg_conn
+  (PUBLICATION 'mz_source')
+  FOR TABLES (orders, customers);
+
+-- 3. Create a materialized view in the compute cluster
+CREATE MATERIALIZED VIEW customer_lifetime_value
+  IN CLUSTER compute
+AS
+SELECT 
+  c.customer_id,
+  c.name,
+  c.region,
+  COUNT(o.order_id) AS order_count,
+  SUM(o.total) AS lifetime_value
+FROM customers c
+LEFT JOIN orders o USING (customer_id)
+GROUP BY c.customer_id, c.name, c.region;
+
+-- 4. Create an index in the serving cluster
+CREATE INDEX idx_clv
+  IN CLUSTER serving
+  ON customer_lifetime_value (region, customer_id);
+
+-- 5. Query from the serving cluster (fast!)
+SET CLUSTER = serving;
+SELECT * FROM customer_lifetime_value 
+WHERE region = 'US'
+ORDER BY lifetime_value DESC
+LIMIT 10;
+
+-- 6. Create a sink to push results to Kafka
+CREATE SINK kafka_sink
+  IN CLUSTER compute
+  FROM customer_lifetime_value
+  INTO KAFKA CONNECTION kafka_conn
+  (TOPIC 'customer-metrics')
+  FORMAT JSON
+  ENVELOPE DEBEZIUM;
+```
+
+---
+
+## Decision Guide: Views, Materialized Views, and Indexes
+
+<Note>
+Use this table to decide which approach fits your use case:
+</Note>
+
+| Use Case | Recommended Approach |
+|----------|---------------------|
+| Intermediate transformation (not queried directly) | **View** (no index) |
+| Results needed in one cluster only | **Indexed view** |
+| Results shared across multiple clusters | **Materialized view** |
+| Final output for `SUBSCRIBE` consumers | **Materialized view** |
+| Fast serving in high-availability cluster | **Materialized view** + **Index in serving cluster** |
+| Point lookups on specific columns | **Index** with those columns as keys |
+| Low-traffic, ad-hoc queries | **View** (no index) |
+| High-traffic, repeated queries | **Indexed view** or **Materialized view** |
+
+---
+
+## Best Practices Summary
+
+<AccordionGroup>
+  <Accordion title="Cluster Architecture">
+    - Use **three-tier architecture** in production (ingestion, compute, serving)
+    - Isolate sources and sinks on dedicated clusters
+    - Size clusters based on actual workload requirements
+    - Use replication for serving clusters that need high availability
+  </Accordion>
+  
+  <Accordion title="Indexes">
+    - Create indexes on views that are frequently queried
+    - Index the columns used in `WHERE` clauses for point lookups
+    - Remember indexes are local to a cluster
+    - Monitor memory usage — indexes live in memory
+  </Accordion>
+  
+  <Accordion title="Materialized Views">
+    - Use for results that must be shared across clusters
+    - Use for `SUBSCRIBE` operations
+    - Consider hydration time when creating or restarting
+    - Index materialized views in serving clusters for low latency
+  </Accordion>
+  
+  <Accordion title="Sources">
+    - Dedicate a cluster for sources if possible
+    - Use upsert sources on larger clusters (they maintain state)
+    - Monitor ingestion lag and throughput
+    - Consider separate clusters for high-volume sources
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Try these concepts hands-on with a complete example
+  </Card>
+  
+  <Card title="SQL Reference" icon="code">
+    Explore the complete SQL syntax reference
+  </Card>
+  
+  <Card title="Optimization Guide" icon="gauge">
+    Learn how to optimize query performance
+  </Card>
+  
+  <Card title="Production Checklist" icon="list-check">
+    Best practices for running Materialize in production
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [Official Documentation](https://materialize.com/docs/)
+- [Transform Data Guide](https://materialize.com/docs/transform-data/)
+- [Ingest Data Guide](https://materialize.com/docs/ingest-data/)
+- [Community Slack](https://materialize.com/s/chat)

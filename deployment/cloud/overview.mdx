@@ -1,0 +1,117 @@
+---
+title: "Materialize Cloud Overview"
+description: "Learn about Materialize Cloud, the fully-managed streaming database platform."
+---
+
+## What is Materialize Cloud?
+
+Materialize Cloud is a fully-managed streaming database that provides real-time data transformation and analytics. Built on top of PostgreSQL-compatible infrastructure, Materialize allows you to run complex analytical queries on continuously updating data with millisecond-level latency.
+
+## Key Features
+
+### Fully Managed Infrastructure
+
+Materialize Cloud handles all operational aspects of running your streaming database:
+
+- **Automatic scaling**: Clusters automatically scale based on your workload requirements
+- **High availability**: Built-in redundancy and failover mechanisms
+- **Managed upgrades**: Seamless version upgrades with zero downtime
+- **Monitoring & alerts**: Comprehensive observability through the web console
+
+### PostgreSQL Compatibility
+
+Materialize is wire-compatible with PostgreSQL, allowing you to:
+
+- Connect using standard PostgreSQL clients and drivers
+- Use familiar SQL syntax for queries and transformations
+- Integrate with existing PostgreSQL tooling and ORMs
+- Leverage extensive ecosystem compatibility
+
+### Real-Time Data Processing
+
+- **Materialized views**: Incrementally maintained views that stay up-to-date automatically
+- **Streaming ingestion**: Connect to Kafka, PostgreSQL CDC, and other streaming sources
+- **Sub-second latency**: Query results reflect the latest data in milliseconds
+- **SUBSCRIBE**: Stream query results to applications in real-time
+
+## Architecture
+
+Materialize Cloud runs on Kubernetes infrastructure managed by Materialize, with components distributed across:
+
+- **environmentd**: SQL interface and query coordinator
+- **clusterd**: Distributed compute workers for data processing
+- **balancerd**: Load balancer for SQL connections
+- **console**: Web-based management interface
+
+## Deployment Models
+
+### Standard Cloud Deployment
+
+Materialize Cloud runs in Materialize-managed infrastructure with:
+
+- Multi-region availability
+- Automatic backups and disaster recovery
+- Enterprise-grade security and compliance
+- 24/7 support from Materialize engineers
+
+### Private Cloud Deployment
+
+For organizations requiring dedicated infrastructure, Materialize offers:
+
+- Single-tenant deployments in your preferred region
+- Enhanced security and isolation
+- Custom scaling and performance configurations
+- Dedicated support and SLAs
+
+## Compute Credits
+
+Materialize Cloud uses a credit-based pricing model:
+
+- **Credits per hour**: Different cluster sizes consume credits at different rates
+- **Cluster sizes**: Range from 25cc (0.25 credits/hour) to 6400cc (64 credits/hour)
+- **Flexible sizing**: Scale clusters up or down based on workload requirements
+- **Pay-as-you-go**: Only pay for active compute resources
+
+### Cluster Size Reference
+
+Cluster sizes are measured in "compute credits" (cc):
+
+| Size | Workers | CPU Limit | Memory Limit | Credits/Hour |
+|------|---------|-----------|--------------|-------------|
+| 25cc | 1 | 0.5 | 3.8 GiB | 0.25 |
+| 50cc | 1 | 1 | 7.6 GiB | 0.5 |
+| 100cc | 2 | 2 | 15.5 GiB | 1 |
+| 200cc | 4 | 4 | 31 GiB | 2 |
+| 400cc | 8 | 8 | 62 GiB | 4 |
+| 800cc | 16 | 16 | 124 GiB | 8 |
+| 1600cc | 31 | 31 | 240 GiB | 16 |
+| 3200cc | 62 | 62 | 481 GiB | 32 |
+| 6400cc | 62 (2x) | 62 | 481 GiB | 64 |
+
+## Security & Compliance
+
+Materialize Cloud provides enterprise-grade security:
+
+- **Encryption**: Data encrypted at rest and in transit (TLS 1.2+)
+- **Authentication**: Support for password-based and SSO authentication
+- **Access control**: Role-based access control (RBAC) and network policies
+- **Audit logging**: Comprehensive audit trails for compliance
+- **Compliance**: SOC 2 Type II certified
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Getting Started" icon="rocket" href="/deployment/cloud/getting-started">
+    Sign up for Materialize Cloud and create your first environment
+  </Card>
+  <Card title="Available Regions" icon="globe" href="/deployment/cloud/regions">
+    Learn about available deployment regions and data residency
+  </Card>
+</CardGroup>
+
+## Learn More
+
+- [Materialize Architecture](/concepts/architecture)
+- [Cluster Management](/manage/clusters)
+- [Security Best Practices](/security/overview)
+- [Pricing Documentation](https://materialize.com/pricing)

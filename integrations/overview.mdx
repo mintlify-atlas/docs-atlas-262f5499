@@ -1,0 +1,153 @@
+---
+title: 'Integrations Overview'
+description: 'Connect to Materialize using various tools, client libraries, and integrations'
+---
+
+Materialize is **wire-compatible** with PostgreSQL, which means it integrates seamlessly with many SQL clients, programming languages, BI tools, and other tools that support PostgreSQL.
+
+## Quick Start
+
+To connect to Materialize, you'll need:
+
+- **Host**: Your Materialize host name (e.g., `instance.region.aws.materialize.cloud`)
+- **Port**: `6875`
+- **Database**: `materialize` (default)
+- **Username**: Your Materialize user email
+- **Password**: App-specific password (prefixed with `mzp_`)
+- **SSL Mode**: `require`
+
+<Info>
+Before connecting, make sure you've created an **app password** for your user in the [Materialize console](/console/). This password is auto-generated and prefixed with `mzp_`.
+</Info>
+
+## Integration Categories
+
+### Client Libraries
+
+Connect to Materialize using PostgreSQL drivers in your favorite programming language:
+
+- **Python** - `psycopg2` or `psycopg3`
+- **Node.js** - `node-postgres` (pg)
+- **Java** - PostgreSQL JDBC driver
+- **Go** - `pgx` driver
+- **Ruby** - `pg` gem
+- **Rust** - `postgres-openssl`
+- **PHP** - `pdo_pgsql`
+
+[View all client libraries →](/integrations/client-libraries)
+
+### BI Tools
+
+Create real-time dashboards and visualizations with popular BI tools:
+
+- **Metabase** - Native PostgreSQL connector
+- **Tableau** - Tableau Cloud and Desktop support
+- **Looker** - PostgreSQL 9.5+ dialect
+- **Power BI** - DirectQuery mode
+- **Hex** - Real-time notebooks
+- **Deepnote** - Collaborative notebooks
+- **Excel** - ODBC connection
+
+[View all BI tools →](/integrations/bi-tools)
+
+### dbt Integration
+
+Use dbt (data build tool) to transform data in Materialize:
+
+- **dbt-materialize** adapter for dbt Core
+- Support for materialized views, indexes, and sources
+- Native integration with dbt's testing and documentation features
+
+[Learn about dbt integration →](/integrations/dbt)
+
+## Connection String Format
+
+Most PostgreSQL clients accept connection strings in this format:
+
+```bash
+postgresql://[USERNAME]:[PASSWORD]@[HOST]:6875/materialize?sslmode=require
+```
+
+### Example Connection String
+
+```bash
+postgresql://user@example.com:mzp_abc123xyz@instance.us-east-1.aws.materialize.cloud:6875/materialize?sslmode=require
+```
+
+## Runtime Connection Parameters
+
+You can pass runtime connection parameters using the `options` parameter or `PGOPTIONS` environment variable:
+
+```bash
+# Using options parameter
+postgresql://user@host:6875/materialize?sslmode=require&options=--cluster%3Dprod
+
+# Using PGOPTIONS environment variable
+export PGOPTIONS='--cluster=prod --transaction_isolation=serializable'
+```
+
+Common parameters:
+- `cluster` - Specify which cluster to use
+- `search_path` - Set the schema search path
+- `transaction_isolation` - Set isolation level
+
+<Warning>
+Parameters set in the connection string work for the **lifetime of the session** only. To permanently change defaults for a user, use [`ALTER ROLE...SET`](/sql/alter-role).
+</Warning>
+
+## Additional Tools
+
+### Materialize CLI
+
+The official Materialize command-line interface:
+
+```bash
+mz sql --cluster prod
+```
+
+### SQL Clients
+
+Connect using standard PostgreSQL clients:
+
+- **psql** - PostgreSQL command-line client
+- **DBeaver** - Universal database tool with native Materialize driver
+- **DataGrip** - JetBrains database IDE
+- **TablePlus** - Modern database management tool
+
+### HTTP & WebSocket APIs
+
+- **HTTP API** - Query via HTTP requests
+- **WebSocket API** - Real-time streaming via WebSockets
+
+## Feature Compatibility
+
+<Note>
+While Materialize is PostgreSQL wire-compatible, some client tools may run introspection queries that use features not yet implemented in Materialize. This includes certain system functions and `pg_catalog` tables.
+</Note>
+
+As Materialize extends coverage of `pg_catalog` and PostgreSQL compatibility, integration support continues to improve.
+
+## Need Help?
+
+If you need assistance with a specific integration:
+
+1. Check the detailed integration guide for your tool
+2. Review [known limitations](/sql/compatibility) in the compatibility docs
+3. Submit a [feature request](https://github.com/MaterializeInc/materialize/discussions/new?category=feature-requests&labels=A-integration) for new integrations
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Client Libraries" icon="code" href="/integrations/client-libraries">
+    Connect using Python, Node.js, Java, and more
+  </Card>
+  <Card title="BI Tools" icon="chart-line" href="/integrations/bi-tools">
+    Build dashboards with Metabase, Tableau, and Looker
+  </Card>
+  <Card title="dbt Integration" icon="hammer" href="/integrations/dbt">
+    Transform data with dbt-materialize
+  </Card>
+  <Card title="SQL Clients" icon="terminal" href="/integrations/sql-clients">
+    Connect with psql, DBeaver, and other SQL clients
+  </Card>
+</CardGroup>

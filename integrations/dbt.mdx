@@ -1,0 +1,509 @@
+---
+title: 'dbt Integration'
+description: 'Use dbt to transform data in Materialize with the dbt-materialize adapter'
+---
+
+The [dbt-materialize](https://github.com/MaterializeInc/materialize/tree/main/misc/dbt-materialize) adapter allows you to use [dbt](https://www.getdbt.com/) (data build tool) to build transformation pipelines in Materialize.
+
+<Info>
+**What is dbt?** dbt is a transformation workflow tool that lets teams deploy analytics code following software engineering best practices like modularity, version control, testing, and CI/CD.
+</Info>
+
+## Requirements
+
+- **Materialize** v0.68.0 or later
+- **Python** 3.8 or later
+- **dbt Core** 1.0.0 or later
+
+## Installation
+
+Install `dbt-materialize` via pip, optionally using a virtual environment:
+
+```bash
+# Create and activate a virtual environment
+python3 -m venv dbt-venv
+source dbt-venv/bin/activate
+
+# Install dbt-core and the Materialize adapter
+pip install dbt-core dbt-materialize
+```
+
+### Verify Installation
+
+```bash
+dbt --version
+```
+
+You should see output indicating that the `materialize` adapter is installed.
+
+## Configuration
+
+### Profile Setup
+
+Configure your dbt profile in `~/.dbt/profiles.yml`:
+
+```yaml
+materialize_project:
+  target: dev
+  outputs:
+    dev:
+      type: materialize
+      host: instance.region.aws.materialize.cloud
+      port: 6875
+      user: user@example.com
+      pass: mzp_your_app_password_here
+      dbname: materialize
+      schema: dbt_user
+      cluster: quickstart
+      sslmode: require
+      threads: 1
+      keepalives_idle: 0
+      retries: 1
+```
+
+### Configuration Parameters
+
+| Parameter | Description | Default | Required |
+|-----------|-------------|---------|----------|
+| `type` | Must be `materialize` | - | Yes |
+| `host` | Materialize hostname | - | Yes |
+| `port` | Connection port | `6875` | Yes |
+| `user` | Your Materialize user email | - | Yes |
+| `pass` | App-specific password (starts with `mzp_`) | - | Yes |
+| `dbname` | Database name | `materialize` | Yes |
+| `schema` | Default schema for dbt models | - | Yes |
+| `cluster` | Cluster to use for materializations | `quickstart` | No |
+| `sslmode` | SSL mode | `require` | Yes |
+| `threads` | Number of concurrent threads | `1` | No |
+| `keepalives_idle` | Keepalive idle time | `0` | No |
+| `retries` | Number of connection retries | `1` | No |
+| `search_path` | Override default search path | - | No |
+
+<Warning>
+Always use `sslmode: require` when connecting to Materialize Cloud.
+</Warning>
+
+### Production Profile Example
+
+```yaml
+materialize_project:
+  target: dev
+  outputs:
+    dev:
+      type: materialize
+      host: dev-instance.region.aws.materialize.cloud
+      port: 6875
+      user: user@example.com
+      pass: "{{ env_var('DBT_MATERIALIZE_PASSWORD') }}"
+      dbname: materialize
+      schema: dbt_dev
+      cluster: dev_cluster
+      sslmode: require
+      
+    prod:
+      type: materialize
+      host: prod-instance.region.aws.materialize.cloud
+      port: 6875
+      user: user@example.com
+      pass: "{{ env_var('DBT_MATERIALIZE_PASSWORD') }}"
+      dbname: materialize
+      schema: public
+      cluster: prod_cluster
+      sslmode: require
+```
+
+## Supported Materializations
+
+### Materialized View (Recommended)
+
+**The primary materialization for Materialize.** Creates a materialized view that incrementally maintains results.
+
+```sql
+-- models/active_users.sql
+{{ config(materialized='materialized_view') }}
+
+SELECT 
+    user_id,
+    COUNT(*) as event_count,
+    MAX(event_timestamp) as last_seen
+FROM {{ source('app', 'events') }}
+GROUP BY user_id
+```
+
+<Info>
+In Materialize, materialized views are **always up-to-date**. You don't need to manually refresh them!
+</Info>
+
+### View
+
+Creates a non-materialized view. Results are computed on each query.
+
+```sql
+{{ config(materialized='view') }}
+
+SELECT * FROM {{ ref('active_users') }}
+WHERE event_count > 10
+```
+
+### Table
+
+Creates a materialized view (actual table support is pending).
+
+```sql
+{{ config(materialized='table') }}
+
+SELECT * FROM {{ ref('user_segments') }}
+```
+
+### Source
+
+Creates a Materialize source using the custom `source` materialization.
+
+```sql
+-- models/sources/kafka_events.sql
+{{ config(
+    materialized='source',
+    source_type='kafka'
+) }}
+
+CREATE SOURCE kafka_events
+FROM KAFKA CONNECTION kafka_connection (
+    TOPIC 'events'
+)
+FORMAT JSON
+```
+
+### Sink
+
+Creates a Materialize sink to export data.
+
+```sql
+{{ config(materialized='sink') }}
+
+CREATE SINK user_sink
+FROM {{ ref('active_users') }}
+INTO KAFKA CONNECTION kafka_connection (
+    TOPIC 'active-users'
+)
+FORMAT JSON
+```
+
+### Ephemeral
+
+Executes queries using CTEs. No database object is created.
+
+```sql
+{{ config(materialized='ephemeral') }}
+
+SELECT * FROM events WHERE event_type = 'click'
+```
+
+### Incremental (Not Supported)
+
+<Warning>
+**Incremental models are not supported.** Use `materialized_view` instead!
+
+Materialize's materialized views provide the same benefits as dbt's incremental models (processing only new data), but they're **always up-to-date** without manual refreshes.
+</Warning>
+
+## Indexes
+
+Define indexes on your materializations using the `indexes` configuration:
+
+```sql
+{{ config(
+    materialized='materialized_view',
+    indexes=[
+        {'columns': ['user_id']},
+        {'columns': ['user_id', 'event_date'], 'name': 'user_date_idx'},
+        {'default': True, 'cluster': 'analytics'}
+    ]
+) }}
+
+SELECT 
+    user_id,
+    DATE(event_timestamp) as event_date,
+    COUNT(*) as event_count
+FROM {{ source('app', 'events') }}
+GROUP BY user_id, event_date
+```
+
+### Index Configuration Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `columns` | list | Columns to index. Use this OR `default`, not both. |
+| `name` | string | Custom index name. Auto-generated if not specified. |
+| `cluster` | string | Cluster to create the index in. Defaults to model's cluster. |
+| `default` | bool | If `true`, creates a default index on all columns. |
+
+### Examples
+
+```sql
+-- Single column index
+{{ config(indexes=[{'columns': ['user_id']}]) }}
+
+-- Multi-column index with custom name
+{{ config(indexes=[{'columns': ['user_id', 'timestamp'], 'name': 'user_time_idx'}]) }}
+
+-- Default index (all columns)
+{{ config(indexes=[{'default': True}]) }}
+
+-- Index in specific cluster
+{{ config(indexes=[{'columns': ['user_id'], 'cluster': 'analytics'}]) }}
+```
+
+## Testing
+
+dbt tests are fully supported:
+
+```yaml
+# models/schema.yml
+version: 2
+
+models:
+  - name: active_users
+    description: "Users with recent activity"
+    columns:
+      - name: user_id
+        description: "Unique user identifier"
+        tests:
+          - unique
+          - not_null
+      - name: event_count
+        description: "Number of events"
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+```
+
+### Storing Test Results
+
+By default, test results are not stored. To store test failures:
+
+```bash
+# Store failures as materialized views
+dbt test --store-failures
+
+# Store failures as views (recommended for Materialize)
+dbt test --store-failures --store-failures-as view
+```
+
+Or configure in `dbt_project.yml`:
+
+```yaml
+tests:
+  +store_failures: true
+  +store_failures_as: view
+  +schema: dbt_test_audit
+```
+
+## Documentation
+
+Generate and serve documentation:
+
+```bash
+# Generate documentation
+dbt docs generate
+
+# Serve documentation locally
+dbt docs serve
+```
+
+Persist documentation to database:
+
+```yaml
+models:
+  my_project:
+    +persist_docs:
+      relation: true
+      columns: true
+```
+
+## Hooks
+
+Pre- and post-hooks are fully supported:
+
+```sql
+{{ config(
+    pre_hook="SET cluster = analytics_cluster",
+    post_hook="GRANT SELECT ON {{ this }} TO analyst_role"
+) }}
+
+SELECT * FROM {{ ref('base_events') }}
+```
+
+## Custom Schemas
+
+Custom schemas work as expected in dbt:
+
+```sql
+{{ config(
+    schema='analytics',
+    materialized='materialized_view'
+) }}
+
+SELECT * FROM {{ ref('raw_events') }}
+```
+
+<Info>
+Read the [dbt documentation on custom schemas](https://docs.getdbt.com/docs/build/custom-schemas) to understand how schema naming works.
+</Info>
+
+## Additional Macros
+
+Use the `materialize-dbt-utils` package for Materialize-specific macro implementations:
+
+```yaml
+# packages.yml
+packages:
+  - package: materializeinc/materialize_dbt_utils
+    version: 0.4.0
+```
+
+Install packages:
+
+```bash
+dbt deps
+```
+
+## Common Commands
+
+```bash
+# Run all models
+dbt run
+
+# Run specific model
+dbt run --select active_users
+
+# Run models and downstream dependencies
+dbt run --select active_users+
+
+# Test models
+dbt test
+
+# Generate documentation
+dbt docs generate
+
+# Compile without running
+dbt compile
+```
+
+## Best Practices
+
+### 1. Use Materialized Views
+
+For most transformations, use `materialized_view` instead of `table` or `incremental`:
+
+```sql
+{{ config(materialized='materialized_view') }}
+```
+
+### 2. Index Strategically
+
+Add indexes to columns used in JOINs and WHERE clauses:
+
+```sql
+{{ config(
+    materialized='materialized_view',
+    indexes=[{'columns': ['user_id', 'timestamp']}]
+) }}
+```
+
+### 3. Use Clusters for Isolation
+
+Separate development and production workloads:
+
+```yaml
+dev:
+  cluster: dev_cluster
+prod:
+  cluster: prod_cluster
+```
+
+### 4. Leverage Source Freshness Checks
+
+<Warning>
+Source freshness checks are not needed with Materialize because sources are **always fresh** — they continuously update as new data arrives.
+</Warning>
+
+### 5. Version Control Your Profiles
+
+Use environment variables for sensitive data:
+
+```yaml
+pass: "{{ env_var('DBT_MATERIALIZE_PASSWORD') }}"
+```
+
+## Troubleshooting
+
+### Connection Issues
+
+Verify your credentials:
+
+```bash
+dbt debug
+```
+
+### Version Compatibility
+
+Ensure you're using Materialize v0.68.0+:
+
+```sql
+SELECT mz_version();
+```
+
+### Slow Model Builds
+
+Check cluster size and resource allocation:
+
+```sql
+SHOW CLUSTERS;
+SHOW CLUSTER REPLICAS;
+```
+
+## Example Project Structure
+
+```
+my_dbt_project/
+├── dbt_project.yml
+├── profiles.yml (in ~/.dbt/)
+├── models/
+│   ├── staging/
+│   │   ├── stg_events.sql
+│   │   └── stg_users.sql
+│   ├── intermediate/
+│   │   ├── int_user_events.sql
+│   │   └── schema.yml
+│   └── marts/
+│       ├── active_users.sql
+│       └── user_metrics.sql
+├── tests/
+└── macros/
+```
+
+## Resources
+
+- [dbt Documentation](https://docs.getdbt.com/)
+- [dbt-materialize on GitHub](https://github.com/MaterializeInc/materialize/tree/main/misc/dbt-materialize)
+- [dbt-materialize on PyPI](https://pypi.org/project/dbt-materialize/)
+- [Materialize dbt Guide](https://materialize.com/docs/guides/dbt/)
+- [dbt Slack Community](https://www.getdbt.com/community/)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Create Your First Model" icon="file-code">
+    Start building dbt models with Materialize
+  </Card>
+  <Card title="Learn About Materializations" icon="database" href="/sql/create-materialized-view">
+    Understand Materialize materialized views
+  </Card>
+  <Card title="Add Indexes" icon="list" href="/sql/create-index">
+    Optimize query performance with indexes
+  </Card>
+  <Card title="Testing in dbt" icon="flask">
+    Write tests for your data transformations
+  </Card>
+</CardGroup>

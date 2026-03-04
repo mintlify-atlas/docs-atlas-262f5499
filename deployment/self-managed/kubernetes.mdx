@@ -1,0 +1,587 @@
+---
+title: "Kubernetes Deployment"
+description: "Deploy Materialize on Kubernetes using the Materialize Operator and Helm charts."
+---
+
+## Overview
+
+This guide walks through deploying Materialize on Kubernetes using Helm. The Materialize Operator manages the lifecycle of Materialize environments within your Kubernetes cluster.
+
+## Prerequisites
+
+- Kubernetes 1.29 or later
+- Helm 3.2.0 or later
+- kubectl configured to access your cluster
+- Storage provisioner configured (OpenEBS recommended)
+- PostgreSQL or CockroachDB instance for metadata
+- S3-compatible object storage for persistence
+
+## Storage Configuration
+
+Materialize requires fast, locally-attached NVMe storage for optimal performance. Network-attached storage (like EBS) is not supported.
+
+### Install OpenEBS (Recommended)
+
+OpenEBS with LVM Local PV provides efficient management of local volumes:
+
+```bash
+# Add OpenEBS Helm repository
+helm repo add openebs https://openebs.github.io/openebs
+helm repo update
+
+# Install OpenEBS (Local PV engines only)
+helm install openebs --namespace openebs openebs/openebs \
+  --set engines.replicated.mayastor.enabled=false \
+  --create-namespace
+
+# Verify installation
+kubectl get pods -n openebs -l role=openebs-lvm
+```
+
+### Configure LVM
+
+LVM setup varies by environment. For AWS EC2 with Bottlerocket AMI:
+
+**Recommended configurations:**
+- Instance types: `r7g`, `r7gd`, `r6g`, `r6gd` families
+- AMI: AWS Bottlerocket
+- Instance store volumes required
+
+**Setup process:**
+1. Use Bottlerocket bootstrap container for LVM configuration
+2. Configure volume group name as `instance-store-vg`
+
+### Create Storage Class
+
+Create a StorageClass for Materialize (save as `storage-class.yaml`):
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: openebs-lvm-instance-store-ext4
+provisioner: local.csi.openebs.io
+parameters:
+  storage: "lvm"
+  fsType: "ext4"
+  volgroup: "instance-store-vg"
+allowVolumeExpansion: false
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+```
+
+Apply the StorageClass:
+
+```bash
+kubectl apply -f storage-class.yaml
+```
+
+<Note>
+While OpenEBS is recommended, you can use any storage provisioner that meets performance requirements by modifying the provisioner and parameters.
+</Note>
+
+## Install Materialize Operator
+
+### Step 1: Add Node Labels
+
+Label your Kubernetes nodes for Materialize workloads:
+
+```bash
+# Get node names
+kubectl get nodes
+
+# Label nodes for Materialize (adjust node-name)
+kubectl label node <node-name> materialize.cloud/disk=true
+kubectl label node <node-name> materialize.cloud/swap=true
+kubectl label node <node-name> materialize.cloud/scratch-fs=true
+
+# Verify labels
+kubectl get nodes --show-labels
+```
+
+### Step 2: Create Values File
+
+Create a `values.yaml` file for the Materialize Operator:
+
+```yaml
+# Operator configuration
+operator:
+  image:
+    repository: materialize/orchestratord
+    tag: v26.13.0
+    pullPolicy: IfNotPresent
+
+  cloudProvider:
+    type: "aws"  # Options: aws, gcp, azure, local
+    region: "us-east-1"
+    providers:
+      aws:
+        enabled: true
+        accountID: "123456789012"
+        iam:
+          roles:
+            environment: "arn:aws:iam::123456789012:role/materialize-env"
+            connection: "arn:aws:iam::123456789012:role/materialize-conn"
+
+  clusters:
+    swap_enabled: true
+    defaultSizes:
+      default: 25cc
+      system: 25cc
+      catalogServer: 25cc
+    defaultReplicationFactor:
+      system: 0
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+
+# Storage configuration
+storage:
+  storageClass:
+    create: true
+    name: "openebs-lvm-instance-store-ext4"
+    provisioner: "local.csi.openebs.io"
+    parameters:
+      storage: "lvm"
+      fsType: "ext4"
+      volgroup: "instance-store-vg"
+
+# Environment defaults
+environmentd:
+  defaultResources:
+    requests:
+      cpu: "1"
+      memory: "4095Mi"
+    limits:
+      memory: "4Gi"
+
+balancerd:
+  enabled: true
+  defaultResources:
+    requests:
+      cpu: "500m"
+      memory: "256Mi"
+    limits:
+      memory: "256Mi"
+
+console:
+  enabled: true
+  defaultResources:
+    requests:
+      cpu: "500m"
+      memory: "256Mi"
+    limits:
+      memory: "256Mi"
+
+# Observability
+observability:
+  enabled: true
+  prometheus:
+    scrapeAnnotations:
+      enabled: true
+  podMetrics:
+    enabled: false  # Requires metrics-server
+
+# Network policies (optional)
+networkPolicies:
+  enabled: false
+
+# RBAC
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: "orchestratord"
+```
+
+### Step 3: Install the Operator
+
+Install the Materialize Operator using Helm:
+
+```bash
+# From Materialize source repository
+helm install materialize-operator \
+  misc/helm-charts/operator \
+  --namespace materialize \
+  --create-namespace \
+  -f values.yaml
+
+# Verify installation
+kubectl get pods -n materialize
+kubectl logs -l app.kubernetes.io/name=materialize-operator -n materialize
+```
+
+Expected output:
+```
+NAME                                      READY   STATUS    RESTARTS   AGE
+materialize-operator-7d8f9c5b6d-xyz12     1/1     Running   0          30s
+```
+
+## Deploy Materialize Environment
+
+### Step 1: Set Up External Dependencies
+
+#### PostgreSQL Metadata Store
+
+Create a PostgreSQL database for Materialize metadata:
+
+```sql
+-- Connect to PostgreSQL as admin
+CREATE DATABASE materialize_db;
+CREATE USER materialize_user WITH PASSWORD 'secure_password';
+GRANT ALL PRIVILEGES ON DATABASE materialize_db TO materialize_user;
+```
+
+#### S3 Bucket for Persistence
+
+Create an S3 bucket (or MinIO for testing):
+
+```bash
+# Using AWS CLI
+aws s3 mb s3://materialize-persist-bucket --region us-east-1
+
+# Or deploy MinIO for testing
+kubectl apply -f misc/helm-charts/testing/minio.yaml
+```
+
+### Step 2: Create Backend Secret
+
+Create a Kubernetes secret with connection strings:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: materialize-backend
+  namespace: materialize-environment
+stringData:
+  # PostgreSQL metadata store
+  metadata_backend_url: "postgres://materialize_user:secure_password@postgres.example.com:5432/materialize_db?sslmode=require"
+  
+  # S3 persistence backend
+  persist_backend_url: "s3://materialize-persist-bucket/12345678-1234-1234-1234-123456789012?endpoint=https://s3.us-east-1.amazonaws.com&region=us-east-1"
+  
+  # License key (required for production)
+  license_key: "your-materialize-license-key"
+```
+
+For MinIO (testing only):
+```yaml
+  persist_backend_url: "s3://minio:minio123@bucket/12345678-1234-1234-1234-123456789012?endpoint=http%3A%2F%2Fminio.materialize.svc.cluster.local%3A9000&region=minio"
+```
+
+Apply the secret:
+
+```bash
+kubectl create namespace materialize-environment
+kubectl apply -f backend-secret.yaml
+```
+
+### Step 3: Create Materialize Custom Resource
+
+Create a Materialize environment definition:
+
+```yaml
+apiVersion: materialize.cloud/v1alpha1
+kind: Materialize
+metadata:
+  name: 12345678-1234-1234-1234-123456789012
+  namespace: materialize-environment
+spec:
+  # Materialize version
+  environmentdImageRef: materialize/environmentd:v26.13.0
+  
+  # Backend configuration
+  backendSecretName: materialize-backend
+  
+  # Authentication
+  authenticatorKind: None  # Options: None, Frontegg
+  
+  # Resource allocation for environmentd
+  environmentdResourceRequirements:
+    limits:
+      memory: 16Gi
+    requests:
+      cpu: "2"
+      memory: 16Gi
+  
+  # Resource allocation for balancerd
+  balancerdResourceRequirements:
+    limits:
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  
+  # Rollout strategy
+  rolloutStrategy: WaitUntilReady  # Options: WaitUntilReady, ImmediatelyPromoteCausingDowntime
+```
+
+Deploy the environment:
+
+```bash
+kubectl apply -f materialize-environment.yaml
+
+# Watch the deployment
+kubectl get materialize -n materialize-environment -w
+kubectl get pods -n materialize-environment -w
+```
+
+### Step 4: Verify Deployment
+
+Check that all components are running:
+
+```bash
+# Check Materialize resource status
+kubectl get materialize -n materialize-environment
+
+# Check all pods
+kubectl get pods -n materialize-environment
+
+# Expected output:
+# NAME                                    READY   STATUS    RESTARTS   AGE
+# environmentd-0                          1/1     Running   0          2m
+# balancerd-xxxxx                         1/1     Running   0          2m
+# console-xxxxx                           1/1     Running   0          2m
+```
+
+## Connect to Materialize
+
+### Get Service Information
+
+```bash
+# Get services
+kubectl get svc -n materialize-environment
+
+# Get balancerd SQL endpoint
+kubectl get svc balancerd -n materialize-environment -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+
+### Port Forwarding (for testing)
+
+```bash
+# Forward SQL port
+kubectl port-forward -n materialize-environment svc/balancerd 6875:6875
+
+# Forward HTTP port
+kubectl port-forward -n materialize-environment svc/environmentd 6876:6876
+
+# Forward console
+kubectl port-forward -n materialize-environment svc/console 8080:80
+```
+
+### Connect with psql
+
+```bash
+# Via port forward
+psql "postgres://materialize@localhost:6875/materialize?sslmode=disable"
+
+# Via LoadBalancer (if configured)
+psql "postgres://materialize@<load-balancer-dns>:6875/materialize?sslmode=require"
+```
+
+### Access Web Console
+
+Open your browser to:
+```
+http://localhost:8080  # Via port forward
+```
+
+Or configure an Ingress for production access.
+
+## Upgrading
+
+### Upgrade the Operator
+
+```bash
+# Update Helm chart
+helm upgrade materialize-operator \
+  misc/helm-charts/operator \
+  --namespace materialize \
+  -f values.yaml
+
+# Verify upgrade
+kubectl rollout status deployment/materialize-operator -n materialize
+```
+
+### Upgrade Materialize Environment
+
+Update the Materialize environment to a new version:
+
+```bash
+# Update image and trigger rollout
+kubectl patch materialize 12345678-1234-1234-1234-123456789012 \
+  -n materialize-environment \
+  --type='merge' \
+  -p '{"spec": {"environmentdImageRef": "materialize/environmentd:v26.15.0", "requestRollout": "'$(uuidgen)'"}}''
+
+# Watch the rollout
+kubectl get materialize -n materialize-environment -w
+kubectl get pods -n materialize-environment -w
+```
+
+<Warning>
+By default, upgrades use the `WaitUntilReady` strategy which minimizes downtime but requires additional cluster resources during the transition.
+</Warning>
+
+### Forced Rollout
+
+To force a rollout without changes:
+
+```bash
+kubectl patch materialize 12345678-1234-1234-1234-123456789012 \
+  -n materialize-environment \
+  --type='merge' \
+  -p '{"spec": {"forceRollout": "'$(uuidgen)'"}}''
+```
+
+## Scaling
+
+### Vertical Scaling (Resource Adjustment)
+
+Adjust resources for environmentd:
+
+```bash
+kubectl patch materialize 12345678-1234-1234-1234-123456789012 \
+  -n materialize-environment \
+  --type='merge' \
+  -p '{
+    "spec": {
+      "environmentdResourceRequirements": {
+        "requests": {"cpu": "4", "memory": "32Gi"},
+        "limits": {"memory": "32Gi"}
+      }
+    }
+  }'
+```
+
+### Horizontal Scaling (Cluster Nodes)
+
+Scale your Kubernetes cluster to add more nodes for clusterd pods:
+
+```bash
+# AWS EKS example
+aws eks update-nodegroup-config \
+  --cluster-name my-cluster \
+  --nodegroup-name materialize-nodes \
+  --scaling-config minSize=3,maxSize=10,desiredSize=5
+```
+
+## Monitoring
+
+### Prometheus Metrics
+
+Materialize exposes Prometheus metrics on each pod:
+
+```yaml
+# ServiceMonitor for Prometheus Operator
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: materialize
+  namespace: materialize-environment
+spec:
+  selector:
+    matchLabels:
+      materialize.cloud/app: environmentd
+  endpoints:
+    - port: http
+      path: /metrics
+```
+
+### Key Metrics
+
+- `mz_*`: Materialize-specific metrics
+- `process_*`: Process-level metrics
+- `compute_*`: Compute cluster metrics
+- `storage_*`: Storage system metrics
+
+### Logs
+
+View logs from Materialize components:
+
+```bash
+# environmentd logs
+kubectl logs -l materialize.cloud/app=environmentd -n materialize-environment
+
+# clusterd logs
+kubectl logs -l materialize.cloud/app=clusterd -n materialize-environment
+
+# Operator logs
+kubectl logs -l app.kubernetes.io/name=materialize-operator -n materialize
+```
+
+## Troubleshooting
+
+### Pods Not Starting
+
+Check pod status and events:
+
+```bash
+kubectl get pods -n materialize-environment
+kubectl describe pod <pod-name> -n materialize-environment
+kubectl logs <pod-name> -n materialize-environment
+```
+
+Common issues:
+- Storage provisioner not configured
+- Node labels missing
+- Insufficient resources
+- Backend secret missing or invalid
+
+### Storage Issues
+
+Verify storage provisioning:
+
+```bash
+# Check PVCs
+kubectl get pvc -n materialize-environment
+
+# Check storage class
+kubectl get storageclass
+
+# Check OpenEBS
+kubectl get pods -n openebs
+```
+
+### Connection Issues
+
+Test connectivity:
+
+```bash
+# Test from within cluster
+kubectl run -it --rm debug --image=postgres:15 --restart=Never -- \
+  psql "postgres://materialize@balancerd.materialize-environment:6875/materialize"
+
+# Check service endpoints
+kubectl get endpoints -n materialize-environment
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration Reference" icon="gear" href="/deployment/self-managed/configuration">
+    Detailed configuration options and parameters
+  </Card>
+  <Card title="Operational Guidelines" icon="book" href="/manage/operational-guidelines">
+    Best practices for production deployments
+  </Card>
+  <Card title="Security Configuration" icon="shield" href="/security/overview">
+    Configure authentication and network policies
+  </Card>
+  <Card title="Monitoring Setup" icon="chart-line" href="/manage/monitoring">
+    Set up comprehensive monitoring and alerting
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [Helm Chart README](https://github.com/MaterializeInc/materialize/blob/main/misc/helm-charts/operator/README.md)
+- [Kubernetes Operator Pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
+- [OpenEBS Documentation](https://openebs.io/docs)
+- [Example Configurations](https://github.com/MaterializeInc/materialize/tree/main/misc/helm-charts/testing)

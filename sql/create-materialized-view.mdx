@@ -1,0 +1,282 @@
+---
+title: 'CREATE MATERIALIZED VIEW'
+description: 'Create incrementally updated materialized views in Materialize'
+---
+
+## Overview
+
+CREATE MATERIALIZED VIEW defines a view that persists results in durable storage and incrementally updates them as new data arrives. Materialized views are the primary mechanism for transforming and maintaining derived data in Materialize.
+
+## Syntax
+
+```sql
+CREATE MATERIALIZED VIEW [IF NOT EXISTS] <view_name>
+  [IN CLUSTER <cluster_name>]
+  [WITH (
+    REFRESH AT { CREATION | <timestamp> },
+    REFRESH EVERY <interval> [ALIGNED TO <timestamp>],
+    ASSERT NOT NULL <column_name>
+  )]
+  AS <select_query>;
+```
+
+## Key Features
+
+### Incremental Maintenance
+
+Materialized views are automatically and incrementally updated as source data changes:
+
+```sql
+CREATE MATERIALIZED VIEW order_totals AS
+  SELECT 
+    customer_id,
+    COUNT(*) AS order_count,
+    SUM(amount) AS total_spent
+  FROM orders
+  GROUP BY customer_id;
+```
+
+As new orders arrive or existing orders update, `order_totals` updates incrementally without recomputing from scratch.
+
+### Cross-Cluster Access
+
+Materialized views can be queried from any cluster:
+
+```sql
+-- Create view in cluster_a
+SET cluster = cluster_a;
+CREATE MATERIALIZED VIEW mv IN CLUSTER cluster_a AS
+  SELECT * FROM source WHERE amount > 100;
+
+-- Query from cluster_b
+SET cluster = cluster_b;
+SELECT * FROM mv;  -- Works!
+```
+
+This allows you to:
+- Separate maintenance compute from query compute
+- Share results across multiple query clusters
+- Optimize resource allocation
+
+### Durable Storage
+
+Results are persisted in durable storage:
+- Survives cluster restarts
+- No memory limitations
+- Can handle arbitrarily large result sets
+
+## Parameters
+
+<ParamField path="view_name" type="identifier" required>
+  Name of the materialized view to create
+</ParamField>
+
+<ParamField path="cluster_name" type="identifier">
+  Cluster where the view will be maintained. Defaults to the active cluster.
+</ParamField>
+
+<ParamField path="select_query" type="SELECT statement" required>
+  The query defining the view's contents
+</ParamField>
+
+## Refresh Strategies
+
+By default, materialized views use **REFRESH ON COMMIT** (incremental maintenance). For specific use cases, you can configure alternative refresh strategies.
+
+### Refresh On Commit (Default)
+
+Views update continuously as data arrives:
+
+```sql
+CREATE MATERIALIZED VIEW mv AS
+  SELECT * FROM source;
+  -- Implicit: REFRESH ON COMMIT
+```
+
+This is the **recommended** mode for most use cases.
+
+### Refresh At Specific Times
+
+Schedule refreshes at specific timestamps:
+
+```sql
+CREATE MATERIALIZED VIEW daily_report
+  IN CLUSTER scheduled_cluster
+  WITH (
+    REFRESH AT CREATION,
+    REFRESH AT '2024-12-01 00:00:00',
+    REFRESH AT '2024-12-02 00:00:00'
+  )
+  AS SELECT * FROM orders;
+```
+
+### Refresh Every Interval
+
+Schedule periodic refreshes:
+
+```sql
+CREATE MATERIALIZED VIEW hourly_metrics
+  IN CLUSTER scheduled_cluster
+  WITH (
+    REFRESH AT CREATION,
+    REFRESH EVERY '1 hour' ALIGNED TO '2024-01-01 00:00:00'
+  )
+  AS 
+    SELECT 
+      date_trunc('hour', created_at) AS hour,
+      COUNT(*) AS event_count
+    FROM events
+    GROUP BY hour;
+```
+
+<Note>
+  Scheduled refresh strategies should only be used for specific reporting use cases over slow-changing data. For most workloads, use the default incremental maintenance.
+</Note>
+
+## Non-Null Assertions
+
+Force columns to be non-nullable when Materialize can't infer it:
+
+```sql
+CREATE MATERIALIZED VIEW users_orders WITH (
+  ASSERT NOT NULL user_id
+) AS
+SELECT
+  COALESCE(users.id, orders.user_id) AS user_id,
+  users.name,
+  orders.order_id
+FROM users 
+FULL OUTER JOIN orders ON users.id = orders.user_id;
+```
+
+If a NULL value appears in an asserted column, queries will error until the row is deleted.
+
+## Indexing Materialized Views
+
+For faster queries, create indexes on materialized views:
+
+```sql
+CREATE MATERIALIZED VIEW user_stats AS
+  SELECT user_id, COUNT(*) as order_count
+  FROM orders
+  GROUP BY user_id;
+
+-- Create index for fast lookups
+CREATE INDEX user_stats_idx ON user_stats (user_id);
+
+-- Now this query is very fast
+SELECT * FROM user_stats WHERE user_id = 123;
+```
+
+<Note>
+  Indexes are cluster-local. Create indexes in each cluster where you query the view.
+</Note>
+
+## Examples
+
+### Basic Aggregation
+
+```sql
+CREATE MATERIALIZED VIEW product_revenue AS
+  SELECT 
+    product_id,
+    SUM(quantity * price) AS total_revenue,
+    COUNT(*) AS order_count
+  FROM order_items
+  GROUP BY product_id;
+```
+
+### Join Multiple Sources
+
+```sql
+CREATE MATERIALIZED VIEW enriched_orders AS
+  SELECT
+    o.order_id,
+    o.order_date,
+    c.customer_name,
+    c.email,
+    p.product_name,
+    oi.quantity,
+    oi.price
+  FROM orders o
+  JOIN customers c ON o.customer_id = c.customer_id
+  JOIN order_items oi ON o.order_id = oi.order_id
+  JOIN products p ON oi.product_id = p.product_id;
+```
+
+### Window Functions
+
+```sql
+CREATE MATERIALIZED VIEW user_rankings AS
+  SELECT
+    user_id,
+    total_spent,
+    RANK() OVER (ORDER BY total_spent DESC) AS spending_rank
+  FROM (
+    SELECT 
+      user_id,
+      SUM(amount) AS total_spent
+    FROM orders
+    GROUP BY user_id
+  );
+```
+
+### Time-Based Aggregation
+
+```sql
+CREATE MATERIALIZED VIEW hourly_events AS
+  SELECT
+    date_trunc('hour', event_time) AS hour,
+    event_type,
+    COUNT(*) AS event_count
+  FROM events
+  GROUP BY hour, event_type;
+```
+
+### Temporal Filter
+
+```sql
+CREATE MATERIALIZED VIEW recent_orders AS
+  SELECT *
+  FROM orders
+  WHERE mz_now() <= created_at + INTERVAL '7 days';
+```
+
+## Materialized Views vs Views vs Indexes
+
+| Feature | Materialized View | View + Index | View (no index) |
+|---------|------------------|--------------|------------------|
+| Storage | Durable storage | Memory (cluster-local) | None |
+| Cross-cluster | Yes | No | No |
+| Updates | Incremental | Incremental | None (computed on read) |
+| Best for | Shared results, sinks | Fast queries in one cluster | Query aliases |
+
+## Best Practices
+
+1. **Use Materialized Views For**:
+   - Results shared across clusters
+   - Data exported to sinks
+   - Results larger than memory
+   - Expensive transformations used by multiple queries
+
+2. **Avoid Materialized Views When**:
+   - Results only queried in one cluster (use indexed view instead)
+   - Results are small and latency is critical (use indexed view)
+   - Query is only run occasionally (use ad hoc query)
+
+3. **Optimize Performance**:
+   - Create indexes on frequently filtered columns
+   - Use appropriate cluster sizes for maintenance
+   - Monitor memory and disk usage
+
+4. **Consider Refresh Strategies**:
+   - Use default incremental maintenance for most cases
+   - Use scheduled refreshes only for reporting on archival data
+   - Configure hydration time estimates for scheduled clusters
+
+## Related Pages
+
+- [CREATE VIEW](/sql/create-view)
+- [CREATE INDEX](/sql/create-index)
+- [CREATE CLUSTER](/sql/create-cluster)
+- [SELECT](/sql/select)

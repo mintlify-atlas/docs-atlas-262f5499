@@ -1,0 +1,407 @@
+---
+title: 'UPDATE'
+description: 'Update existing rows in tables'
+---
+
+## Overview
+
+UPDATE modifies existing rows in user-created tables. It allows conditional updates using WHERE clauses.
+
+## Syntax
+
+```sql
+UPDATE <table_name> [AS <alias>]
+  SET <column> = <expression> [, ...]
+  [WHERE <condition>];
+```
+
+## Parameters
+
+<ParamField path="table_name" type="identifier" required>
+  Name of the table to update
+</ParamField>
+
+<ParamField path="alias" type="identifier">
+  Optional alias for the table
+</ParamField>
+
+<ParamField path="column" type="identifier" required>
+  Column to update
+</ParamField>
+
+<ParamField path="expression" type="expression" required>
+  New value for the column (can reference existing column values)
+</ParamField>
+
+<ParamField path="condition" type="boolean expression">
+  Condition to filter which rows to update
+</ParamField>
+
+## Basic UPDATE
+
+### Update Single Column
+
+```sql
+CREATE TABLE users (
+  id integer,
+  name text,
+  email text,
+  status text
+);
+
+INSERT INTO users VALUES
+  (1, 'Alice', 'alice@example.com', 'active'),
+  (2, 'Bob', 'bob@example.com', 'active');
+
+-- Update single column
+UPDATE users
+SET status = 'inactive'
+WHERE id = 1;
+```
+
+### Update Multiple Columns
+
+```sql
+UPDATE users
+SET
+  email = 'alice.smith@example.com',
+  status = 'active'
+WHERE id = 1;
+```
+
+## Conditional Updates
+
+### Simple WHERE Condition
+
+```sql
+CREATE TABLE orders (
+  order_id integer,
+  customer_id integer,
+  status text,
+  amount numeric
+);
+
+-- Update orders over $1000
+UPDATE orders
+SET status = 'priority'
+WHERE amount > 1000;
+```
+
+### Complex WHERE Condition
+
+```sql
+UPDATE orders
+SET status = 'flagged'
+WHERE amount > 5000
+  AND status = 'pending'
+  AND customer_id IN (SELECT id FROM high_risk_customers);
+```
+
+## Using Current Values
+
+### Increment Values
+
+```sql
+CREATE TABLE inventory (
+  product_id integer,
+  quantity integer,
+  reserved integer
+);
+
+-- Increase quantity
+UPDATE inventory
+SET quantity = quantity + 100
+WHERE product_id = 42;
+```
+
+### Compute from Existing Values
+
+```sql
+CREATE TABLE accounts (
+  account_id integer,
+  balance numeric,
+  last_updated timestamp
+);
+
+UPDATE accounts
+SET
+  balance = balance * 1.05,  -- 5% increase
+  last_updated = now()
+WHERE account_id = 123;
+```
+
+## Update All Rows
+
+```sql
+-- Update all rows (no WHERE clause)
+UPDATE products
+SET in_stock = true;
+
+-- Set default values for all
+UPDATE users
+SET status = 'active',
+    last_login = now();
+```
+
+<Warning>
+  Be careful when omitting the WHERE clause - it will update ALL rows in the table!
+</Warning>
+
+## Using Table Alias
+
+```sql
+UPDATE orders AS o
+SET o.status = 'completed'
+WHERE o.order_id = 12345;
+```
+
+## Examples
+
+### Update Based on Calculation
+
+```sql
+CREATE TABLE products (
+  product_id integer,
+  price numeric,
+  discount_percent numeric,
+  final_price numeric
+);
+
+UPDATE products
+SET final_price = price * (1 - discount_percent / 100)
+WHERE discount_percent > 0;
+```
+
+### Update with CASE Expression
+
+```sql
+CREATE TABLE employees (
+  employee_id integer,
+  salary numeric,
+  department text,
+  performance_rating integer
+);
+
+UPDATE employees
+SET salary = CASE
+  WHEN performance_rating >= 4 THEN salary * 1.10  -- 10% raise
+  WHEN performance_rating >= 3 THEN salary * 1.05  -- 5% raise
+  ELSE salary  -- No raise
+END
+WHERE department = 'Engineering';
+```
+
+### Update Status Based on Conditions
+
+```sql
+CREATE TABLE subscriptions (
+  subscription_id integer,
+  user_id integer,
+  end_date date,
+  status text,
+  auto_renew boolean
+);
+
+-- Mark expired subscriptions
+UPDATE subscriptions
+SET status = 'expired'
+WHERE end_date < CURRENT_DATE
+  AND status = 'active';
+
+-- Mark for renewal
+UPDATE subscriptions
+SET status = 'pending_renewal'
+WHERE end_date <= CURRENT_DATE + INTERVAL '7 days'
+  AND auto_renew = true
+  AND status = 'active';
+```
+
+### Bulk Status Update
+
+```sql
+CREATE TABLE tasks (
+  task_id integer,
+  assignee_id integer,
+  status text,
+  priority integer
+);
+
+-- Reassign high-priority incomplete tasks
+UPDATE tasks
+SET assignee_id = 99,  -- Reassign to manager
+    priority = 1       -- Highest priority
+WHERE status != 'completed'
+  AND priority <= 2
+  AND assignee_id = 42;  -- From specific user
+```
+
+### Reset Values
+
+```sql
+CREATE TABLE counters (
+  counter_id integer,
+  counter_name text,
+  value integer,
+  last_reset timestamp
+);
+
+-- Reset daily counters
+UPDATE counters
+SET
+  value = 0,
+  last_reset = now()
+WHERE counter_name LIKE 'daily_%';
+```
+
+### Update from Calculation
+
+```sql
+CREATE TABLE customer_stats (
+  customer_id integer,
+  total_orders integer,
+  total_spent numeric,
+  avg_order_value numeric
+);
+
+UPDATE customer_stats
+SET avg_order_value = CASE
+  WHEN total_orders > 0 THEN total_spent / total_orders
+  ELSE 0
+END;
+```
+
+## Known Limitations
+
+<Warning>
+  **Performance and Transaction Limitations:**
+  - UPDATE has low performance
+  - Blocks other INSERT, UPDATE, DELETE operations while processing
+  - Cannot be used inside transactions
+  - Can only update tables, not sources or read-only tables
+</Warning>
+
+### No Transaction Support
+
+```sql
+-- This will fail
+BEGIN;
+UPDATE users SET status = 'active';
+COMMIT;  -- ERROR
+```
+
+### Cannot Update Sources
+
+```sql
+-- This will fail
+UPDATE kafka_source
+SET value = 'new_value';  -- ERROR
+
+-- Can only update tables
+UPDATE my_table
+SET value = 'new_value';  -- OK
+```
+
+## Best Practices
+
+1. **Always Use WHERE Clause (Usually)**
+   ```sql
+   -- Good: Targeted update
+   UPDATE users SET status = 'inactive' WHERE id = 123;
+   
+   -- Risky: Updates all rows
+   UPDATE users SET status = 'inactive';
+   ```
+
+2. **Test with SELECT First**
+   ```sql
+   -- First, verify which rows will be affected
+   SELECT * FROM users WHERE status = 'pending';
+   
+   -- Then update
+   UPDATE users SET status = 'active' WHERE status = 'pending';
+   ```
+
+3. **Use Meaningful Conditions**
+   ```sql
+   -- Good: Clear and specific
+   UPDATE orders
+   SET status = 'shipped'
+   WHERE order_id = 12345
+     AND status = 'processing';
+   ```
+
+4. **Update Timestamps**
+   ```sql
+   -- Track when records were updated
+   UPDATE users
+   SET
+     email = 'new@example.com',
+     updated_at = now()
+   WHERE user_id = 123;
+   ```
+
+5. **Batch Updates When Possible**
+   ```sql
+   -- Better: Single UPDATE affecting multiple rows
+   UPDATE products
+   SET discount = 0.10
+   WHERE category = 'electronics';
+   
+   -- Avoid: Multiple single-row UPDATEs
+   UPDATE products SET discount = 0.10 WHERE product_id = 1;
+   UPDATE products SET discount = 0.10 WHERE product_id = 2;
+   -- ...
+   ```
+
+## Verification
+
+Always verify your updates:
+
+```sql
+-- Before update
+SELECT * FROM users WHERE id = 123;
+
+-- Perform update
+UPDATE users
+SET email = 'new@example.com'
+WHERE id = 123;
+
+-- After update
+SELECT * FROM users WHERE id = 123;
+```
+
+## When to Use UPDATE
+
+**Use UPDATE When:**
+- Correcting data in small tables
+- Updating dimensional/reference data
+- Manual data fixes
+- Low-frequency updates
+
+**Avoid UPDATE For:**
+- High-volume data changes (use sources instead)
+- Streaming updates (use sources with CDC)
+- Frequent updates (consider redesign)
+
+## Alternatives for High-Volume Updates
+
+For frequently changing data, use sources:
+
+```sql
+-- Instead of many UPDATEs, use a CDC source
+CREATE SOURCE inventory_changes
+  FROM KAFKA CONNECTION kafka_conn (TOPIC 'inventory')
+  FORMAT JSON
+  ENVELOPE UPSERT;
+
+-- Materialize maintains current state automatically
+CREATE MATERIALIZED VIEW current_inventory AS
+  SELECT * FROM inventory_changes;
+```
+
+## Related Pages
+
+- [CREATE TABLE](/sql/create-table)
+- [INSERT](/sql/insert)
+- [DELETE](/sql/delete)
+- [SELECT](/sql/select)

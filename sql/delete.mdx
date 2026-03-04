@@ -1,0 +1,424 @@
+---
+title: 'DELETE'
+description: 'Delete rows from tables'
+---
+
+## Overview
+
+DELETE removes rows from user-created tables based on specified conditions.
+
+## Syntax
+
+```sql
+DELETE FROM <table_name> [AS <alias>]
+  [USING <from_item> [, ...]]
+  [WHERE <condition>];
+```
+
+## Parameters
+
+<ParamField path="table_name" type="identifier" required>
+  Name of the table to delete from
+</ParamField>
+
+<ParamField path="alias" type="identifier">
+  Optional alias for the table
+</ParamField>
+
+<ParamField path="from_item" type="table expression">
+  Additional tables to reference in the WHERE clause
+</ParamField>
+
+<ParamField path="condition" type="boolean expression">
+  Condition to filter which rows to delete
+</ParamField>
+
+## Basic DELETE
+
+### Delete Specific Rows
+
+```sql
+CREATE TABLE users (
+  id integer,
+  name text,
+  email text,
+  status text
+);
+
+INSERT INTO users VALUES
+  (1, 'Alice', 'alice@example.com', 'active'),
+  (2, 'Bob', 'bob@example.com', 'inactive'),
+  (3, 'Charlie', 'charlie@example.com', 'active');
+
+-- Delete specific user
+DELETE FROM users WHERE id = 2;
+```
+
+### Delete with Multiple Conditions
+
+```sql
+-- Delete inactive users from specific domain
+DELETE FROM users
+WHERE status = 'inactive'
+  AND email LIKE '%@oldcompany.com';
+```
+
+## Delete All Rows
+
+```sql
+-- Delete all rows (use with caution!)
+DELETE FROM users;
+```
+
+<Warning>
+  Omitting the WHERE clause will delete ALL rows from the table!
+</Warning>
+
+## Using USING Clause
+
+Reference other tables in the delete condition:
+
+```sql
+CREATE TABLE orders (
+  order_id integer,
+  customer_id integer,
+  order_date date
+);
+
+CREATE TABLE customers (
+  customer_id integer,
+  status text
+);
+
+-- Delete orders from inactive customers
+DELETE FROM orders
+USING customers
+WHERE orders.customer_id = customers.customer_id
+  AND customers.status = 'inactive';
+```
+
+### Multiple Tables in USING
+
+```sql
+CREATE TABLE order_items (
+  item_id integer,
+  order_id integer,
+  product_id integer
+);
+
+CREATE TABLE products (
+  product_id integer,
+  discontinued boolean
+);
+
+-- Delete order items for discontinued products from cancelled orders
+DELETE FROM order_items
+USING orders, products
+WHERE order_items.order_id = orders.order_id
+  AND order_items.product_id = products.product_id
+  AND orders.status = 'cancelled'
+  AND products.discontinued = true;
+```
+
+## Examples
+
+### Delete Old Records
+
+```sql
+CREATE TABLE logs (
+  log_id integer,
+  message text,
+  created_at timestamp
+);
+
+-- Delete logs older than 30 days
+DELETE FROM logs
+WHERE created_at < now() - INTERVAL '30 days';
+```
+
+### Delete Based on Status
+
+```sql
+CREATE TABLE tasks (
+  task_id integer,
+  title text,
+  status text,
+  completed_at timestamp
+);
+
+-- Delete completed tasks from last year
+DELETE FROM tasks
+WHERE status = 'completed'
+  AND completed_at < date_trunc('year', now());
+```
+
+### Delete Duplicates
+
+```sql
+CREATE TABLE emails (
+  id integer,
+  email text,
+  created_at timestamp
+);
+
+-- Delete duplicate emails, keeping the oldest
+DELETE FROM emails
+WHERE id NOT IN (
+  SELECT MIN(id)
+  FROM emails
+  GROUP BY email
+);
+```
+
+### Cascading Delete
+
+```sql
+CREATE TABLE customers (
+  customer_id integer,
+  name text
+);
+
+CREATE TABLE orders (
+  order_id integer,
+  customer_id integer
+);
+
+-- Delete a customer and their orders
+DELETE FROM orders
+WHERE customer_id = 123;
+
+DELETE FROM customers
+WHERE customer_id = 123;
+```
+
+### Delete with Subquery
+
+```sql
+CREATE TABLE products (
+  product_id integer,
+  name text,
+  category_id integer
+);
+
+CREATE TABLE categories (
+  category_id integer,
+  name text,
+  active boolean
+);
+
+-- Delete products in inactive categories
+DELETE FROM products
+WHERE category_id IN (
+  SELECT category_id
+  FROM categories
+  WHERE active = false
+);
+```
+
+### Conditional Cleanup
+
+```sql
+CREATE TABLE sessions (
+  session_id text,
+  user_id integer,
+  last_activity timestamp,
+  expired boolean
+);
+
+-- Delete expired sessions
+DELETE FROM sessions
+WHERE expired = true
+   OR last_activity < now() - INTERVAL '24 hours';
+```
+
+### Delete Test Data
+
+```sql
+CREATE TABLE users (
+  user_id integer,
+  email text,
+  is_test boolean
+);
+
+-- Remove test accounts
+DELETE FROM users
+WHERE is_test = true
+   OR email LIKE '%@test.com';
+```
+
+## Verify Before Deleting
+
+Always check what will be deleted:
+
+```sql
+-- First, see what will be deleted
+SELECT * FROM orders
+WHERE status = 'cancelled'
+  AND created_at < '2023-01-01';
+
+-- If results look correct, delete
+DELETE FROM orders
+WHERE status = 'cancelled'
+  AND created_at < '2023-01-01';
+
+-- Verify deletion
+SELECT COUNT(*) FROM orders WHERE status = 'cancelled';
+```
+
+## Known Limitations
+
+<Warning>
+  **Performance and Transaction Limitations:**
+  - DELETE has low performance
+  - Blocks other INSERT, UPDATE, DELETE operations while processing
+  - Cannot be used inside transactions
+  - Can only delete from tables, not sources or read-only tables
+</Warning>
+
+### No Transaction Support
+
+```sql
+-- This will fail
+BEGIN;
+DELETE FROM users WHERE id = 123;
+COMMIT;  -- ERROR
+```
+
+### Cannot Delete from Sources
+
+```sql
+-- This will fail
+DELETE FROM kafka_source WHERE id = 123;  -- ERROR
+
+-- Can only delete from tables
+DELETE FROM my_table WHERE id = 123;  -- OK
+```
+
+## Best Practices
+
+1. **Always Use WHERE Clause (Usually)**
+   ```sql
+   -- Good: Targeted delete
+   DELETE FROM users WHERE id = 123;
+   
+   -- Dangerous: Deletes everything
+   DELETE FROM users;
+   ```
+
+2. **Verify with SELECT First**
+   ```sql
+   -- Check what will be deleted
+   SELECT * FROM orders WHERE status = 'cancelled';
+   
+   -- Then delete
+   DELETE FROM orders WHERE status = 'cancelled';
+   ```
+
+3. **Use Specific Conditions**
+   ```sql
+   -- Good: Precise condition
+   DELETE FROM sessions
+   WHERE session_id = 'abc123'
+     AND user_id = 456;
+   
+   -- Risky: Too broad
+   DELETE FROM sessions WHERE user_id = 456;
+   ```
+
+4. **Consider Soft Deletes**
+   ```sql
+   -- Instead of deleting, mark as deleted
+   UPDATE users
+   SET deleted = true, deleted_at = now()
+   WHERE id = 123;
+   
+   -- Then filter in queries
+   SELECT * FROM users WHERE deleted = false;
+   ```
+
+5. **Batch Deletes Carefully**
+   ```sql
+   -- Delete in smaller batches for large tables
+   DELETE FROM logs
+   WHERE created_at < '2023-01-01'
+   LIMIT 1000;
+   ```
+
+6. **Document Cleanup Procedures**
+   ```sql
+   -- Add comments explaining the deletion
+   -- Delete archived orders older than 7 years (compliance requirement)
+   DELETE FROM orders
+   WHERE status = 'archived'
+     AND created_at < now() - INTERVAL '7 years';
+   ```
+
+## When to Use DELETE
+
+**Use DELETE When:**
+- Removing test or incorrect data
+- Cleaning up old records
+- Manual data maintenance
+- Small-scale deletions
+
+**Avoid DELETE For:**
+- High-frequency deletions (use sources with CDC)
+- Large-scale bulk deletions (may impact performance)
+- Data that might need recovery (use soft deletes)
+
+## Alternatives
+
+### Soft Deletes
+
+```sql
+CREATE TABLE users (
+  user_id integer,
+  name text,
+  deleted boolean DEFAULT false,
+  deleted_at timestamp
+);
+
+-- Mark as deleted instead of removing
+UPDATE users
+SET deleted = true, deleted_at = now()
+WHERE user_id = 123;
+
+-- Query only active users
+CREATE VIEW active_users AS
+SELECT * FROM users WHERE deleted = false;
+```
+
+### Archive Instead of Delete
+
+```sql
+CREATE TABLE orders_archive AS
+SELECT * FROM orders WHERE FALSE;
+
+-- Move to archive
+INSERT INTO orders_archive
+SELECT * FROM orders
+WHERE created_at < '2023-01-01';
+
+-- Then delete from main table
+DELETE FROM orders
+WHERE created_at < '2023-01-01';
+```
+
+### Use CDC for Streaming Deletes
+
+```sql
+-- Instead of manual deletes, use a source with UPSERT envelope
+CREATE SOURCE user_changes
+  FROM KAFKA CONNECTION kafka_conn (TOPIC 'users')
+  FORMAT JSON
+  ENVELOPE UPSERT;
+
+-- Deletes are handled automatically via null values
+```
+
+## Related Pages
+
+- [CREATE TABLE](/sql/create-table)
+- [INSERT](/sql/insert)
+- [UPDATE](/sql/update)
+- [SELECT](/sql/select)

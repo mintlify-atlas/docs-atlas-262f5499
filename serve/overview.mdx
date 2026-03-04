@@ -1,0 +1,139 @@
+---
+title: Serve Results
+description: Learn how to serve query results from Materialize using SELECT, SUBSCRIBE, sinks, and BI tools
+---
+
+In Materialize, indexed views and materialized views maintain up-to-date query results. This allows Materialize to serve fresh query results with low latency.
+
+## Overview
+
+Materialize provides multiple ways to serve and consume your data:
+
+- **Query results** - Use `SELECT` statements to query point-in-time results with PostgreSQL-compatible clients
+- **Stream updates** - Use `SUBSCRIBE` to receive continuous streams of changes as they occur
+- **External sinks** - Write data to external systems like Kafka, S3, or Snowflake
+- **BI tools** - Connect business intelligence and data visualization tools
+
+## Query Results
+
+Materialize is wire-compatible with PostgreSQL, which means you can use standard PostgreSQL clients to query data:
+
+```sql
+SELECT region.id, sum(purchase.total)
+FROM mysql_simple_purchase AS purchase
+JOIN mysql_simple_user AS user ON purchase.user_id = user.id
+JOIN mysql_simple_region AS region ON user.region_id = region.id
+GROUP BY region.id;
+```
+
+**Key benefits:**
+- Queries against indexed and materialized views return results instantly from memory
+- Low-latency responses ideal for operational applications
+- Compatible with any PostgreSQL client library
+
+Learn more in [Query Results](/serve/query-results).
+
+## Stream Updates
+
+For applications that need real-time updates, use `SUBSCRIBE` to stream changes:
+
+```sql
+BEGIN;
+DECLARE c CURSOR FOR SUBSCRIBE my_view;
+FETCH ALL c WITH (timeout='1s');
+```
+
+**Key benefits:**
+- Receive incremental updates as data changes
+- Power event-driven architectures
+- Replicate the complete history of a relation
+
+Learn more in [Subscribe](/serve/subscribe).
+
+## Sinks
+
+Sinks write Materialize data to external systems for downstream consumption:
+
+**Supported destinations:**
+- Kafka and Redpanda
+- Amazon S3
+- Snowflake
+- Iceberg
+- Third-party integrations (Census, etc.)
+
+```sql
+CREATE SINK kafka_sink
+  FROM my_materialized_view
+  INTO KAFKA CONNECTION kafka_connection (TOPIC 'results')
+  KEY (id)
+  FORMAT JSON
+  ENVELOPE UPSERT;
+```
+
+**Key benefits:**
+- Automatically propagate changes to external systems
+- Exactly-once delivery guarantees (Kafka)
+- Multiple format options (Avro, JSON, Parquet)
+
+Learn more in [Kafka Sinks](/serve/kafka-sinks).
+
+## Performance Considerations
+
+### Indexed and Materialized Views
+
+Performing a `SELECT` on an indexed view or materialized view is Materialize's ideal operation. When receiving such queries, Materialize quickly returns the maintained results from memory.
+
+### Ad-hoc Queries
+
+Queries that can't simply read from an index will create an ephemeral dataflow to compute the results. These dataflows are bound to the active cluster and are removed as soon as results are returned.
+
+### Cluster Management
+
+You can control which cluster executes queries:
+
+```sql
+SET cluster = my_cluster;
+```
+
+**Best practice:** Avoid putting sinks on the same cluster that hosts sources to allow for blue/green deployments.
+
+## Client Libraries
+
+Materialize works with PostgreSQL client libraries across languages:
+
+- [Python](/integrations/client-libraries/python) (psycopg2, psycopg3)
+- [Node.js](/integrations/client-libraries/node-js) (node-postgres)
+- [Java](/integrations/client-libraries/java-jdbc) (JDBC)
+- [Go](/integrations/client-libraries/golang)
+- [Ruby](/integrations/client-libraries/ruby)
+- [Rust](/integrations/client-libraries/rust)
+- [PHP](/integrations/client-libraries/php)
+
+## BI Tools
+
+Connect popular business intelligence and data visualization tools:
+
+- Tableau
+- Power BI
+- Metabase
+- Looker
+- Hex
+- Deepnote
+- Excel
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Query Results" icon="database" href="/serve/query-results">
+    Query Materialize using SELECT statements
+  </Card>
+  <Card title="Subscribe" icon="stream" href="/serve/subscribe">
+    Stream real-time updates with SUBSCRIBE
+  </Card>
+  <Card title="Kafka Sinks" icon="kafka" href="/serve/kafka-sinks">
+    Write data to Kafka topics
+  </Card>
+  <Card title="BI Tools" icon="chart-line" href="/integrations/bi-tools">
+    Connect visualization tools
+  </Card>
+</CardGroup>

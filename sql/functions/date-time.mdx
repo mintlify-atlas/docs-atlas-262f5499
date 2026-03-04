@@ -1,0 +1,489 @@
+---
+title: Date and Time Functions
+description: SQL functions for working with temporal data types
+---
+
+Materialize provides comprehensive functions for working with dates, times, timestamps, and intervals.
+
+## Current Time Functions
+
+### now()
+
+Returns the system clock time when the transaction began.
+
+**Return Type:** `timestamp with time zone`
+
+**Example:**
+```sql
+SELECT now() AS current_time;
+-- Result: 2023-06-15 22:38:14.18+00
+
+INSERT INTO events (content, created_at)
+VALUES ('hello', now());
+```
+
+<Warning>
+`now()` is **unmaterializable** - you cannot create indexes or materialized views that use `now()`.
+</Warning>
+
+### mz_now()
+
+Returns the logical timestamp at which the query was executed.
+
+**Return Type:** `mz_timestamp` (bigint)
+
+**Example:**
+```sql
+SELECT mz_now() AS logical_time;
+-- Result: 1686868693480
+
+SELECT now(), mz_now(), * FROM events;
+```
+
+**Usage in Temporal Filters:**
+
+`mz_now()` can be materialized when used in temporal filters:
+
+```sql
+-- Create a view of events from the last 30 seconds
+CREATE MATERIALIZED VIEW last_30_sec AS
+SELECT event_ts, content
+FROM events
+WHERE mz_now() <= event_ts + INTERVAL '30s';
+```
+
+<Note>
+Use `mz_now()` for temporal filters that can be materialized. Use `now()` for ad-hoc queries and timestamp recording.
+</Note>
+
+## Extracting Date/Time Components
+
+### EXTRACT
+
+Extract a specific component from a date, time, or timestamp value.
+
+**Syntax:**
+```sql
+EXTRACT(field FROM source)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `field` | keyword | The component to extract |
+| `source` | temporal type | Date, time, timestamp, timestamptz, or interval |
+
+**Return Type:** `numeric`
+
+**Supported Fields:**
+
+| Field | Synonyms | Description |
+|-------|----------|-------------|
+| `EPOCH` | - | Seconds since Unix epoch |
+| `MILLENNIUM` | `MIL`, `MILLENNIA` | Millennium |
+| `CENTURY` | `C`, `CENT`, `CENTURIES` | Century |
+| `DECADE` | `DEC`, `DECS`, `DECADES` | Decade |
+| `YEAR` | `Y`, `YR`, `YRS`, `YEARS` | Year |
+| `QUARTER` | `QTR` | Quarter (1-4) |
+| `MONTH` | `MON`, `MONS`, `MONTHS` | Month (1-12) |
+| `WEEK` | `W`, `WEEKS` | Week of year |
+| `DAY` | `D`, `DAYS` | Day of month |
+| `HOUR` | `H`, `HR`, `HRS`, `HOURS` | Hour (0-23) |
+| `MINUTE` | `M`, `MIN`, `MINS`, `MINUTES` | Minute (0-59) |
+| `SECOND` | `S`, `SEC`, `SECS`, `SECONDS` | Seconds (with fractional parts) |
+| `MILLISECOND` | `MS`, `MSEC`, `MSECONDS` | Milliseconds |
+| `MICROSECOND` | `US`, `USEC`, `USECONDS` | Microseconds |
+| `DOW` | - | Day of week (0=Sunday, 6=Saturday) |
+| `ISODOW` | - | ISO day of week (1=Monday, 7=Sunday) |
+| `DOY` | - | Day of year (1-365/366) |
+
+**Examples:**
+```sql
+SELECT EXTRACT(YEAR FROM TIMESTAMP '2006-01-02 15:04:05.06') AS year;
+-- Result: 2006
+
+SELECT EXTRACT(SECOND FROM TIMESTAMP '2006-01-02 15:04:05.06') AS seconds;
+-- Result: 5.06
+
+SELECT EXTRACT(DOW FROM DATE '2024-03-15') AS day_of_week;
+-- Result: 5 (Friday)
+
+SELECT EXTRACT(CENTURY FROM DATE '2006-01-02') AS century;
+-- Result: 21
+```
+
+### date_part
+
+Functionally equivalent to `EXTRACT` but returns `float` instead of `numeric`.
+
+```sql
+SELECT date_part('YEAR', TIMESTAMP '2006-01-02 15:04:05') AS year;
+-- Result: 2006.0
+```
+
+<Note>
+Use `EXTRACT` instead of `date_part` for better precision. `date_part` returns float which can lose precision.
+</Note>
+
+## Truncating Date/Time Values
+
+### DATE_TRUNC
+
+Truncate a timestamp to a specified precision ("floor" value).
+
+**Syntax:**
+```sql
+DATE_TRUNC(field, source)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `field` | text | The precision to truncate to |
+| `source` | temporal type | Timestamp, timestamptz, or interval |
+
+**Return Type:** Same as input type
+
+**Supported Fields:**
+- `microseconds`, `milliseconds`, `second`, `minute`, `hour`
+- `day`, `week`, `month`, `quarter`, `year`
+- `decade`, `century`, `millennium`
+
+**Examples:**
+```sql
+SELECT date_trunc('hour', TIMESTAMP '2019-11-26 15:56:46.241150') AS hour_trunc;
+-- Result: 2019-11-26 15:00:00
+
+SELECT date_trunc('day', TIMESTAMP '2019-11-26 15:56:46') AS day_trunc;
+-- Result: 2019-11-26 00:00:00
+
+SELECT date_trunc('month', TIMESTAMP '2019-11-26 15:56:46') AS month_trunc;
+-- Result: 2019-11-01 00:00:00
+
+SELECT date_trunc('year', TIMESTAMP '2019-11-26 15:56:46') AS year_trunc;
+-- Result: 2019-01-01 00:00:00
+```
+
+**Common Use Cases:**
+
+```sql
+-- Group by hour
+SELECT 
+    date_trunc('hour', event_time) AS hour,
+    COUNT(*) AS events_per_hour
+FROM events
+GROUP BY date_trunc('hour', event_time)
+ORDER BY hour;
+
+-- Daily aggregation
+SELECT 
+    date_trunc('day', order_time) AS day,
+    SUM(amount) AS daily_revenue
+FROM orders
+GROUP BY day;
+```
+
+### date_bin
+
+Align timestamps to arbitrary intervals (not just standard units).
+
+**Syntax:**
+```sql
+DATE_BIN(stride, source, origin)
+```
+
+**Example:**
+```sql
+-- Bin into 15-minute intervals
+SELECT date_bin(
+    INTERVAL '15 minutes',
+    TIMESTAMP '2024-03-15 10:37:00',
+    TIMESTAMP '2024-03-15 00:00:00'
+) AS binned;
+-- Result: 2024-03-15 10:30:00
+```
+
+## Calculating Date/Time Differences
+
+### datediff
+
+Calculate the difference between two temporal values based on a specified unit.
+
+**Syntax:**
+```sql
+DATEDIFF(datepart, start, end)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `datepart` | text | Unit to measure (see below) |
+| `start` | temporal type | Starting date/time |
+| `end` | temporal type | Ending date/time |
+
+**Return Type:** `int`
+
+**Supported Date Parts:**
+- `millenniums`, `centuries`, `decades`, `years`, `quarters`, `months`, `weeks`, `days`
+- `hours`, `minutes`, `seconds`, `milliseconds`, `microseconds`
+
+**Examples:**
+```sql
+SELECT datediff('day', DATE '2024-01-01', DATE '2024-01-15') AS days;
+-- Result: 14
+
+SELECT datediff('month', DATE '2024-01-15', DATE '2024-03-20') AS months;
+-- Result: 2
+
+SELECT datediff('hour', 
+    TIMESTAMP '2024-03-15 10:00:00',
+    TIMESTAMP '2024-03-15 15:30:00'
+) AS hours;
+-- Result: 5
+
+-- Millennium boundary crossing
+SELECT datediff('millennia', '2000-12-31', '2001-01-01') AS diff;
+-- Result: 1 (even though only 1 day apart)
+```
+
+**Leap Year Handling:**
+```sql
+SELECT datediff('day', '2004-02-28', '2004-03-01') AS leap;
+-- Result: 2 (includes Feb 29)
+
+SELECT datediff('day', '2005-02-28', '2005-03-01') AS non_leap;
+-- Result: 1
+```
+
+### Timestamp Subtraction
+
+Direct subtraction of timestamps returns an interval:
+
+```sql
+SELECT 
+    TIMESTAMP '2024-03-15 15:30:00' - 
+    TIMESTAMP '2024-03-15 10:00:00' AS duration;
+-- Result: 05:30:00 (interval)
+```
+
+## Interval Arithmetic
+
+### Creating Intervals
+
+```sql
+SELECT INTERVAL '1 day' AS one_day;
+SELECT INTERVAL '2 hours 30 minutes' AS duration;
+SELECT INTERVAL '1 year 2 months 15 days' AS period;
+```
+
+### Arithmetic Operations
+
+**Date + Interval:**
+```sql
+SELECT DATE '2024-03-15' + INTERVAL '7 days' AS next_week;
+-- Result: 2024-03-22 00:00:00
+
+SELECT DATE '2024-03-15' + INTERVAL '3 months' AS three_months_later;
+-- Result: 2024-06-15 00:00:00
+```
+
+**Timestamp + Interval:**
+```sql
+SELECT TIMESTAMP '2024-03-15 10:00:00' + INTERVAL '2 hours' AS later;
+-- Result: 2024-03-15 12:00:00
+
+SELECT now() + INTERVAL '30 minutes' AS thirty_minutes_from_now;
+```
+
+**Timestamp - Interval:**
+```sql
+SELECT TIMESTAMP '2024-03-15 10:00:00' - INTERVAL '1 day' AS yesterday;
+-- Result: 2024-03-14 10:00:00
+
+SELECT now() - INTERVAL '7 days' AS last_week;
+```
+
+**Interval Multiplication:**
+```sql
+SELECT INTERVAL '1 hour' * 3 AS three_hours;
+-- Result: 03:00:00
+```
+
+## Time Zone Conversion
+
+### AT TIME ZONE
+
+Convert timestamps between time zones:
+
+```sql
+-- Convert timestamp to a specific timezone
+SELECT TIMESTAMP '2024-03-15 10:00:00' AT TIME ZONE 'UTC' AS utc_time;
+
+-- Convert timestamptz to local time in a timezone
+SELECT TIMESTAMPTZ '2024-03-15 10:00:00+00' AT TIME ZONE 'America/New_York' 
+    AS ny_time;
+
+-- Current time in different zones
+SELECT 
+    now() AT TIME ZONE 'UTC' AS utc,
+    now() AT TIME ZONE 'America/New_York' AS ny,
+    now() AT TIME ZONE 'Europe/London' AS london,
+    now() AT TIME ZONE 'Asia/Tokyo' AS tokyo;
+```
+
+### timezone Function
+
+Alternative syntax for time zone conversion:
+
+```sql
+SELECT timezone('America/Los_Angeles', now()) AS la_time;
+```
+
+## Formatting Date/Time Values
+
+### to_char
+
+Format temporal values as strings with custom patterns:
+
+```sql
+SELECT to_char(now(), 'YYYY-MM-DD HH24:MI:SS') AS formatted;
+-- Result: 2024-03-15 10:30:00
+
+SELECT to_char(DATE '2024-03-15', 'Mon DD, YYYY') AS formatted;
+-- Result: Mar 15, 2024
+
+SELECT to_char(now(), 'Day, Month DD, YYYY at HH12:MI AM') AS formatted;
+-- Result: Friday, March 15, 2024 at 10:30 AM
+```
+
+**Common Format Patterns:**
+- `YYYY`: 4-digit year
+- `MM`: 2-digit month
+- `DD`: 2-digit day
+- `HH24`: 24-hour format
+- `HH12`: 12-hour format
+- `MI`: Minutes
+- `SS`: Seconds
+- `AM/PM`: AM/PM indicator
+- `Day`: Full day name
+- `Mon`: Abbreviated month name
+
+## Interval Justification
+
+Adjust intervals to use standard representations:
+
+### justify_days
+
+Convert days to months (30-day months):
+
+```sql
+SELECT justify_days(INTERVAL '35 days') AS justified;
+-- Result: 1 month 5 days
+```
+
+### justify_hours
+
+Convert hours to days (24-hour days):
+
+```sql
+SELECT justify_hours(INTERVAL '27 hours') AS justified;
+-- Result: 1 day 03:00:00
+```
+
+### justify_interval
+
+Apply both justifications:
+
+```sql
+SELECT justify_interval(INTERVAL '35 days 27 hours') AS justified;
+-- Result: 1 month 6 days 03:00:00
+```
+
+## Common Temporal Patterns
+
+### Temporal Filters (Last N Days/Hours)
+
+```sql
+-- Events from last 24 hours
+SELECT * FROM events
+WHERE event_time > now() - INTERVAL '24 hours';
+
+-- Using mz_now() for materialized views
+CREATE MATERIALIZED VIEW recent_events AS
+SELECT * FROM events
+WHERE mz_now() <= event_time + INTERVAL '1 hour';
+```
+
+### Age Calculation
+
+```sql
+SELECT 
+    name,
+    birth_date,
+    EXTRACT(YEAR FROM age(now(), birth_date)) AS age_years
+FROM users;
+```
+
+### Business Hours Filtering
+
+```sql
+SELECT * FROM transactions
+WHERE EXTRACT(HOUR FROM transaction_time) BETWEEN 9 AND 17
+  AND EXTRACT(ISODOW FROM transaction_time) <= 5;  -- Monday-Friday
+```
+
+### Time-Series Bucketing
+
+```sql
+-- Hourly aggregation
+SELECT 
+    date_trunc('hour', event_time) AS hour,
+    COUNT(*) AS event_count,
+    AVG(response_time) AS avg_response
+FROM events
+GROUP BY hour
+ORDER BY hour;
+
+-- 5-minute buckets
+SELECT 
+    date_bin(INTERVAL '5 minutes', event_time, TIMESTAMP '2024-01-01') AS bucket,
+    COUNT(*) AS events
+FROM events
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+### Relative Time Labels
+
+```sql
+SELECT 
+    order_id,
+    order_time,
+    CASE 
+        WHEN order_time > now() - INTERVAL '1 hour' THEN 'Last hour'
+        WHEN order_time > now() - INTERVAL '1 day' THEN 'Last 24 hours'
+        WHEN order_time > now() - INTERVAL '7 days' THEN 'Last week'
+        ELSE 'Older'
+    END AS recency
+FROM orders;
+```
+
+## Time-Like Operators
+
+| Operation | Result Type | Example |
+|-----------|-------------|----------|
+| `date + interval` | `timestamp` | `DATE '2024-03-15' + INTERVAL '1 day'` |
+| `date - interval` | `timestamp` | `DATE '2024-03-15' - INTERVAL '1 day'` |
+| `date - date` | `integer` (days) | `DATE '2024-03-20' - DATE '2024-03-15'` |
+| `timestamp + interval` | `timestamp` | `now() + INTERVAL '1 hour'` |
+| `timestamp - interval` | `timestamp` | `now() - INTERVAL '1 hour'` |
+| `timestamp - timestamp` | `interval` | `TIMESTAMP '2024-03-15 12:00' - TIMESTAMP '2024-03-15 10:00'` |
+| `time + interval` | `time` | `TIME '10:00' + INTERVAL '30 minutes'` |
+| `time - time` | `interval` | `TIME '12:00' - TIME '10:00'` |
+
+## Related Resources
+
+- [Date Type](/sql/types/date)
+- [Time Type](/sql/types/time)
+- [Timestamp Type](/sql/types/timestamp)
+- [Timestamptz Type](/sql/types/timestamptz)
+- [Interval Type](/sql/types/interval)
+- [Temporal Filters Pattern](/sql/patterns/temporal-filters)
+- [mz_timestamp Type](/sql/types/mz_timestamp)

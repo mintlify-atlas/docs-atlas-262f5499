@@ -1,0 +1,446 @@
+---
+title: 'SQL Views'
+description: 'Understand regular views, indexed views, and how they differ from materialized views in Materialize'
+---
+
+## What are views?
+
+A **view** in Materialize is a named SQL query that provides an alias for a `SELECT` statement. Views don't store data themselves — they're query definitions that are evaluated when referenced.
+
+```sql
+CREATE VIEW purchase_summary AS
+SELECT 
+    region.id,
+    region.name,
+    COUNT(*) as purchase_count,
+    SUM(purchase.amount) as total_sales
+FROM purchase
+JOIN user ON purchase.user_id = user.id
+JOIN region ON user.region_id = region.id
+GROUP BY region.id, region.name;
+```
+
+This view can now be queried like a table:
+
+```sql
+SELECT * FROM purchase_summary WHERE id = 5;
+```
+
+## Views vs materialized views
+
+### Regular views
+
+**Regular views** are query aliases without stored results:
+
+- **No storage cost** - views don't consume memory or disk
+- **No maintenance overhead** - no dataflow runs until the view is queried or indexed
+- **Computed on demand** - results are calculated when queried (unless indexed)
+- **Single cluster scope** - indexed views are local to the cluster where the index exists
+
+### Materialized views
+
+**Materialized views** persist results in durable storage:
+
+- **Storage cost** - results are stored on disk (and in memory if indexed)
+- **Maintenance overhead** - dataflow continuously maintains results
+- **Pre-computed** - results are always current and ready to query
+- **Cross-cluster access** - can be queried from any cluster
+- **Required for sinks** - you must materialize views to push to Kafka or other external systems
+
+<Note>
+  Use **regular views** when you only need results within a single cluster for ad hoc queries or as building blocks for other views. Use **materialized views** when you need cross-cluster access, durability, or external sinks.
+</Note>
+
+## Indexing views
+
+To maintain view results incrementally **in memory** within a cluster, create an **index** on the view:
+
+```sql
+CREATE INDEX purchase_summary_region_idx 
+ON purchase_summary(id);
+```
+
+When you create an index:
+
+1. **Dataflow starts** - Materialize begins executing the view's query
+2. **Results stored in memory** - the complete result set is maintained in RAM
+3. **Incremental updates** - as source data changes, the index updates incrementally
+4. **Fast queries** - queries against the view read directly from memory
+
+### Indexed views behavior
+
+Indexed views in Materialize behave similarly to materialized views, with key differences:
+
+| Feature | Indexed View | Materialized View |
+|---------|-------------|-------------------|
+| **Storage** | In-memory only | Durable storage + optional in-memory index |
+| **Cluster scope** | Local to cluster with index | Accessible from any cluster |
+| **Survives restart** | No | Yes |
+| **Can sink to Kafka** | No | Yes |
+| **Query latency** | Lowest (direct memory access) | Low (storage read, or memory if indexed) |
+| **Use case** | Single-cluster, low-latency queries | Cross-cluster access, durability, sinks |
+
+## Creating views
+
+### Basic view creation
+
+```sql
+CREATE VIEW user_region_summary AS
+SELECT 
+    user.id,
+    user.name,
+    region.name as region_name,
+    COUNT(purchase.id) as purchase_count
+FROM user
+JOIN region ON user.region_id = region.id
+LEFT JOIN purchase ON purchase.user_id = user.id
+GROUP BY user.id, user.name, region.name;
+```
+
+### View with complex transformations
+
+```sql
+CREATE VIEW high_value_transactions AS
+SELECT 
+    t.id,
+    t.user_id,
+    t.amount,
+    t.created_at,
+    u.tier,
+    -- Flag transactions above user's average
+    CASE 
+        WHEN t.amount > avg_by_user.avg_amount THEN true 
+        ELSE false 
+    END as above_average
+FROM transactions t
+JOIN users u ON t.user_id = u.id
+JOIN (
+    SELECT user_id, AVG(amount) as avg_amount
+    FROM transactions
+    GROUP BY user_id
+) avg_by_user ON t.user_id = avg_by_user.user_id
+WHERE t.amount > 1000;
+```
+
+### Creating or replacing views
+
+You can replace an existing view with an updated definition:
+
+```sql
+CREATE OR REPLACE VIEW purchase_summary AS
+SELECT 
+    region.id,
+    region.name,
+    COUNT(*) as purchase_count,
+    SUM(purchase.amount) as total_sales,
+    AVG(purchase.amount) as avg_sale_amount  -- New column
+FROM purchase
+JOIN user ON purchase.user_id = user.id
+JOIN region ON user.region_id = region.id
+GROUP BY region.id, region.name;
+```
+
+<Warning>
+  You cannot replace views that other views depend on, nor replace a non-view object with a view.
+</Warning>
+
+## Indexing strategies
+
+### Default index (full result set)
+
+A default index maintains the entire result set in memory:
+
+```sql
+-- Index all columns for full result set access
+CREATE INDEX purchase_summary_idx ON purchase_summary();
+```
+
+This is useful when:
+- You frequently query the entire view
+- Your result set is reasonably sized
+- You want the fastest possible full-table scans
+
+### Point lookup index
+
+Index on specific columns for fast equality lookups:
+
+```sql
+-- Fast lookups by region_id
+CREATE INDEX purchase_summary_region_idx 
+ON purchase_summary(region_id);
+```
+
+Materialize can perform **point lookups** on the index when queries specify exact equality conditions:
+
+```sql
+-- Uses index for point lookup
+SELECT * FROM purchase_summary WHERE region_id = 5;
+
+-- Uses index for point lookup with multiple values
+SELECT * FROM purchase_summary WHERE region_id IN (5, 10, 15);
+```
+
+### Multi-column index
+
+Index on multiple columns for compound lookups:
+
+```sql
+CREATE INDEX orders_user_status_idx 
+ON orders(user_id, status);
+```
+
+Point lookup works when **all** indexed columns are specified:
+
+```sql
+-- Point lookup (both columns specified)
+SELECT * FROM orders 
+WHERE user_id = 123 AND status = 'completed';
+
+-- Index scan (only first column specified)
+SELECT * FROM orders WHERE user_id = 123;
+```
+
+### Expression index
+
+Index on computed expressions:
+
+```sql
+CREATE INDEX orders_total_idx 
+ON orders(quantity * price);
+```
+
+```sql
+-- Uses expression index
+SELECT * FROM orders 
+WHERE quantity * price > 1000;
+```
+
+<Tip>
+  The expression in the index must **exactly match** the expression in the query for point lookups to work.
+</Tip>
+
+## View composition
+
+Views can reference other views, enabling modular query design:
+
+```sql
+-- Base view: user activity
+CREATE VIEW user_activity AS
+SELECT 
+    user_id,
+    DATE_TRUNC('day', created_at) as activity_date,
+    COUNT(*) as action_count
+FROM user_actions
+GROUP BY user_id, activity_date;
+
+-- Layer 2: weekly summaries
+CREATE VIEW weekly_activity AS
+SELECT 
+    user_id,
+    DATE_TRUNC('week', activity_date) as week_start,
+    SUM(action_count) as weekly_actions
+FROM user_activity
+GROUP BY user_id, week_start;
+
+-- Layer 3: user engagement tiers
+CREATE VIEW user_engagement_tiers AS
+SELECT 
+    user_id,
+    AVG(weekly_actions) as avg_weekly_actions,
+    CASE 
+        WHEN AVG(weekly_actions) > 100 THEN 'high'
+        WHEN AVG(weekly_actions) > 20 THEN 'medium'
+        ELSE 'low'
+    END as engagement_tier
+FROM weekly_activity
+GROUP BY user_id;
+```
+
+Materialize shares underlying dataflow computation across views with overlapping subplans, minimizing redundant work.
+
+## Temporary views
+
+Temporary views exist only for the duration of your SQL session:
+
+```sql
+CREATE TEMP VIEW session_summary AS
+SELECT 
+    COUNT(*) as total_orders,
+    SUM(amount) as total_revenue
+FROM orders
+WHERE created_at >= NOW() - INTERVAL '1 hour';
+```
+
+Temporary views:
+- Are automatically dropped when your session ends
+- Are not visible to other connections
+- Are always created in the `mz_temp` schema
+- Can depend on other temporary objects
+- Cannot be depended upon by non-temporary views
+
+## Incremental maintenance with indexes
+
+When you create an index on a view, Materialize maintains results incrementally:
+
+### Example: Real-time dashboard
+
+```sql
+-- Create view of regional sales
+CREATE VIEW regional_sales AS
+SELECT 
+    region.id as region_id,
+    region.name as region_name,
+    COUNT(DISTINCT order_id) as order_count,
+    COUNT(DISTINCT user_id) as unique_customers,
+    SUM(amount) as total_revenue
+FROM orders
+JOIN users ON orders.user_id = users.id
+JOIN regions ON users.region_id = regions.id
+GROUP BY region.id, region.name;
+
+-- Index for fast dashboard queries
+CREATE INDEX regional_sales_idx ON regional_sales();
+```
+
+Now as orders stream in:
+
+1. New order arrives: `INSERT INTO orders VALUES (101, 5, 250.00, ...)`
+2. Materialize identifies which regions are affected
+3. Incrementally updates only those region's counts and sums
+4. Index immediately reflects the change
+
+Your dashboard queries see results in milliseconds:
+
+```sql
+SELECT * FROM regional_sales ORDER BY total_revenue DESC;
+```
+
+## Performance considerations
+
+### When to index a view
+
+Create an index on a view when:
+
+- ✅ You query the view frequently
+- ✅ You need low-latency results (single-digit milliseconds)
+- ✅ The view's result set fits in your cluster's memory
+- ✅ The query pattern benefits from maintained results
+
+Avoid indexing when:
+
+- ❌ The view is rarely queried
+- ❌ Results are extremely large and don't fit in memory
+- ❌ The query is simple enough to compute on-demand quickly
+- ❌ You're only using the view as a building block (intermediate view)
+
+### Memory usage
+
+Indexes consume memory proportional to:
+- **Result set size** - number of rows × size of each row
+- **Index key cardinality** - more unique values = more index entries
+
+Monitor memory usage:
+
+```sql
+SELECT 
+    index_name,
+    size_bytes / 1024 / 1024 as size_mb
+FROM mz_internal.mz_cluster_replica_sizes
+WHERE cluster_name = 'my_cluster';
+```
+
+## Example: E-commerce analytics
+
+Let's build a complete example with views and indexes:
+
+```sql
+-- Base view: order details
+CREATE VIEW order_details AS
+SELECT 
+    o.id as order_id,
+    o.user_id,
+    o.created_at as order_time,
+    u.email,
+    u.tier as customer_tier,
+    oi.product_id,
+    p.name as product_name,
+    p.category,
+    oi.quantity,
+    oi.price,
+    (oi.quantity * oi.price) as line_total
+FROM orders o
+JOIN users u ON o.user_id = u.id
+JOIN order_items oi ON o.id = oi.order_id
+JOIN products p ON oi.product_id = p.id;
+
+-- Aggregated view: product performance
+CREATE VIEW product_performance AS
+SELECT 
+    product_id,
+    product_name,
+    category,
+    COUNT(DISTINCT order_id) as order_count,
+    SUM(quantity) as units_sold,
+    SUM(line_total) as total_revenue,
+    AVG(line_total) as avg_order_value
+FROM order_details
+GROUP BY product_id, product_name, category;
+
+-- Index for fast product lookups
+CREATE INDEX product_performance_id_idx 
+ON product_performance(product_id);
+
+-- Index for category analysis
+CREATE INDEX product_performance_category_idx 
+ON product_performance(category);
+
+-- View: customer lifetime value
+CREATE VIEW customer_ltv AS
+SELECT 
+    user_id,
+    email,
+    customer_tier,
+    COUNT(DISTINCT order_id) as lifetime_orders,
+    SUM(line_total) as lifetime_value,
+    MIN(order_time) as first_order_date,
+    MAX(order_time) as last_order_date
+FROM order_details
+GROUP BY user_id, email, customer_tier;
+
+-- Index for customer lookups
+CREATE INDEX customer_ltv_user_idx 
+ON customer_ltv(user_id);
+```
+
+Query examples:
+
+```sql
+-- Fast point lookup: specific product performance
+SELECT * FROM product_performance 
+WHERE product_id = 'P12345';
+
+-- Category analysis
+SELECT 
+    category,
+    SUM(total_revenue) as category_revenue,
+    SUM(units_sold) as category_units
+FROM product_performance
+GROUP BY category
+ORDER BY category_revenue DESC;
+
+-- High-value customer identification
+SELECT * FROM customer_ltv
+WHERE lifetime_value > 10000
+ORDER BY lifetime_value DESC
+LIMIT 100;
+```
+
+All queries return results in milliseconds because the indexes maintain results incrementally as new orders arrive.
+
+## Related resources
+
+- [CREATE VIEW](/sql/create-view)
+- [CREATE INDEX](/sql/create-index)
+- [Concepts: Views](/concepts/views)
+- [Concepts: Indexes](/concepts/indexes)
+- [Query Optimization](/transform/optimization)

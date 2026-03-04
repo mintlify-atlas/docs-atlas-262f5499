@@ -1,0 +1,161 @@
+---
+title: 'SQL Overview'
+description: 'Learn about Materialize SQL dialect and PostgreSQL compatibility'
+---
+
+## Introduction
+
+Materialize uses SQL as its primary interface for defining data transformations and querying results. The SQL dialect is based on PostgreSQL and aims for high compatibility while introducing streaming-specific extensions.
+
+## PostgreSQL Compatibility
+
+Materialize is wire-compatible with PostgreSQL, which means:
+
+- You can connect to Materialize using any PostgreSQL client library or tool
+- Most PostgreSQL SQL syntax is supported
+- Connection poolers like PgBouncer work seamlessly
+- Standard PostgreSQL data types are available
+
+However, Materialize is **not** a PostgreSQL database. It is a streaming SQL database designed for incremental computation and real-time data transformation.
+
+### Key Differences from PostgreSQL
+
+**Incremental Computation**
+
+Unlike traditional databases that recompute queries on demand, Materialize maintains query results incrementally as new data arrives. This fundamental difference affects how you design and optimize queries.
+
+**Materialized Views**
+
+In Materialize, materialized views are first-class citizens. They:
+- Persist results in durable storage
+- Update incrementally as source data changes
+- Can be queried from any cluster
+- Are always fresh and up-to-date
+
+**Indexes**
+
+Indexes in Materialize:
+- Store results in memory within a specific cluster
+- Provide fast point-lookups for queries
+- Update incrementally like materialized views
+- Are scoped to a single cluster
+
+**Clusters**
+
+Materialize uses clusters to isolate compute resources. Each cluster:
+- Has dedicated CPU, memory, and disk resources
+- Can be independently sized and scaled
+- Maintains its own indexes
+- Provides resource isolation between workloads
+
+## SQL Dialect Features
+
+### Streaming-First Design
+
+Materialize SQL is optimized for streaming workloads:
+
+- **Real-time transformations**: Define complex transformations that update incrementally
+- **Temporal filters**: Filter data based on time windows
+- **Change data capture**: Ingest CDC streams from databases
+- **Subscriptions**: Stream query results as they update
+
+### Supported SQL Commands
+
+**Data Definition (DDL)**
+
+- `CREATE SOURCE` - Ingest data from external systems
+- `CREATE MATERIALIZED VIEW` - Define incrementally maintained transformations
+- `CREATE VIEW` - Define query aliases
+- `CREATE INDEX` - Build in-memory indexes
+- `CREATE TABLE` - Create user-defined tables
+- `CREATE SINK` - Export data to external systems
+- `CREATE CLUSTER` - Provision compute resources
+
+**Data Manipulation (DML)**
+
+- `SELECT` - Query data
+- `INSERT` - Insert rows into tables
+- `UPDATE` - Update table rows
+- `DELETE` - Delete table rows
+- `SUBSCRIBE` - Stream query results over time
+
+**Schema Introspection**
+
+- `SHOW` commands for exploring objects
+- `EXPLAIN` commands for query optimization
+- System catalog views for metadata
+
+## Data Types
+
+Materialize supports a comprehensive set of data types including:
+
+- **Numeric**: `integer`, `bigint`, `smallint`, `numeric`, `real`, `double precision`
+- **Text**: `text`, `varchar`, `char`
+- **Binary**: `bytea`
+- **Boolean**: `boolean`
+- **Date/Time**: `date`, `time`, `timestamp`, `timestamptz`, `interval`
+- **JSON**: `jsonb`
+- **Complex**: `array`, `list`, `map`, `record`
+- **UUID**: `uuid`
+- **Custom**: User-defined types via `CREATE TYPE`
+
+For detailed information, see [Data Types](/sql/data-types).
+
+## Query Patterns
+
+### Joins
+
+Materialize supports all standard SQL join types:
+- Inner joins
+- Left/right/full outer joins
+- Cross joins
+- Self joins
+
+Joins are incrementally maintained, making them efficient even on large, frequently updated datasets.
+
+### Aggregations
+
+Standard SQL aggregation functions work as expected:
+- `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
+- `DISTINCT`, `GROUP BY`
+- Window functions
+- `HAVING` clauses
+
+Aggregations update incrementally as input data changes.
+
+### Subqueries
+
+Materialize supports:
+- Correlated and uncorrelated subqueries
+- Subqueries in `WHERE`, `FROM`, and `SELECT` clauses
+- Common Table Expressions (CTEs)
+- Recursive CTEs
+
+## Transactions
+
+Materialize supports read-only transactions via `BEGIN` and `COMMIT`. Write operations (`INSERT`, `UPDATE`, `DELETE`) currently have limited transaction support.
+
+## System Catalog
+
+Materialize provides system catalog views (in the `mz_catalog` and `mz_internal` schemas) that expose metadata about:
+- Sources, tables, views, and materialized views
+- Clusters and replicas
+- Indexes and sinks
+- Schemas and databases
+- Performance metrics
+
+## Connection and Authentication
+
+Materialize uses PostgreSQL-compatible connection strings and supports:
+- Password authentication
+- SSL/TLS connections
+- Connection pooling
+- Multiple concurrent connections
+
+## Related Pages
+
+- [Data Types](/sql/data-types)
+- [CREATE SOURCE](/sql/create-source)
+- [CREATE MATERIALIZED VIEW](/sql/create-materialized-view)
+- [SELECT](/sql/select)
+- [SUBSCRIBE](/sql/subscribe)

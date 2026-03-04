@@ -1,0 +1,448 @@
+---
+title: "information_schema"
+description: "SQL standard system catalog interface for compatibility with standard SQL tools."
+---
+
+## Overview
+
+The `information_schema` is a SQL standard interface for querying database metadata. Materialize provides compatibility shims for several `information_schema` views to support tools that expect standard SQL system catalogs.
+
+<Warning>
+These compatibility shims are **largely incomplete**. Many columns present in the SQL standard are missing or always return `NULL`. For new applications, use the [`mz_catalog`](/sql/system-catalog/mz-catalog) schema instead, which provides complete and accurate metadata in Materialize's native format.
+</Warning>
+
+## When to Use information_schema
+
+Use `information_schema` when:
+
+- Integrating with third-party tools that require SQL standard catalogs
+- Porting queries from other SQL databases
+- Writing portable SQL that works across multiple database systems
+
+**For Materialize-native applications, prefer `mz_catalog`** for:
+- Complete and accurate metadata
+- Materialize-specific features (clusters, replicas, etc.)
+- Better documentation and support
+
+## Available Views
+
+Materialize supports the following `information_schema` views:
+
+### Schema and Database Information
+
+#### schemata
+
+Lists all schemas in the current database.
+
+```sql
+-- List all schemas
+SELECT schema_name, catalog_name
+FROM information_schema.schemata
+ORDER BY schema_name;
+```
+
+Equivalent `mz_catalog` query:
+```sql
+SELECT s.name AS schema_name, d.name AS catalog_name
+FROM mz_catalog.mz_schemas s
+JOIN mz_catalog.mz_databases d ON s.database_id = d.id;
+```
+
+### Table and View Information
+
+#### tables
+
+Lists all tables, views, and materialized views.
+
+```sql
+-- List all tables and views in the public schema
+SELECT table_name, table_type
+FROM information_schema.tables
+WHERE table_schema = 'public'
+ORDER BY table_name;
+```
+
+Equivalent `mz_catalog` query:
+```sql
+SELECT r.name AS table_name, r.type AS table_type
+FROM mz_catalog.mz_relations r
+JOIN mz_catalog.mz_schemas s ON r.schema_id = s.id
+WHERE s.name = 'public'
+ORDER BY r.name;
+```
+
+#### views
+
+Lists all views (non-materialized).
+
+```sql
+-- Show view definitions
+SELECT 
+  table_name,
+  view_definition
+FROM information_schema.views
+WHERE table_schema = 'public';
+```
+
+Equivalent `mz_catalog` query:
+```sql
+SELECT v.name AS table_name, v.definition AS view_definition
+FROM mz_catalog.mz_views v
+JOIN mz_catalog.mz_schemas s ON v.schema_id = s.id
+WHERE s.name = 'public';
+```
+
+### Column Information
+
+#### columns
+
+Lists all columns in tables, views, and materialized views.
+
+```sql
+-- Show column details for a specific table
+SELECT 
+  column_name,
+  ordinal_position,
+  data_type,
+  is_nullable,
+  column_default
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name = 'my_table'
+ORDER BY ordinal_position;
+```
+
+Equivalent `mz_catalog` query:
+```sql
+SELECT 
+  c.name AS column_name,
+  c.position AS ordinal_position,
+  c.type AS data_type,
+  CASE WHEN c.nullable THEN 'YES' ELSE 'NO' END AS is_nullable,
+  c.default AS column_default
+FROM mz_catalog.mz_columns c
+JOIN mz_catalog.mz_relations r ON c.id = r.id
+JOIN mz_catalog.mz_schemas s ON r.schema_id = s.id
+WHERE s.name = 'public'
+  AND r.name = 'my_table'
+ORDER BY c.position;
+```
+
+### Constraint Information
+
+#### table_constraints
+
+Lists table constraints. Note that Materialize has limited constraint support.
+
+```sql
+-- List all constraints
+SELECT 
+  table_name,
+  constraint_name,
+  constraint_type
+FROM information_schema.table_constraints
+WHERE table_schema = 'public';
+```
+
+#### key_column_usage
+
+Lists columns that participate in key constraints.
+
+```sql
+-- Show key columns
+SELECT 
+  table_name,
+  column_name,
+  constraint_name
+FROM information_schema.key_column_usage
+WHERE table_schema = 'public';
+```
+
+#### referential_constraints
+
+Lists foreign key constraints (currently limited in Materialize).
+
+### Function and Routine Information
+
+#### routines
+
+Lists functions and stored procedures.
+
+```sql
+-- List all functions
+SELECT 
+  routine_name,
+  routine_type,
+  data_type AS return_type
+FROM information_schema.routines
+WHERE routine_schema = 'public';
+```
+
+Equivalent `mz_catalog` query:
+```sql
+SELECT 
+  f.name AS routine_name,
+  CASE WHEN f.returns_set THEN 'TABLE FUNCTION' ELSE 'FUNCTION' END AS routine_type,
+  t.name AS return_type
+FROM mz_catalog.mz_functions f
+JOIN mz_catalog.mz_schemas s ON f.schema_id = s.id
+LEFT JOIN mz_catalog.mz_types t ON f.return_type_id = t.id
+WHERE s.name = 'public';
+```
+
+### Role and Privilege Information
+
+#### applicable_roles
+
+Lists role memberships applicable to the current user.
+
+```sql
+-- Show role memberships
+SELECT 
+  grantee,
+  role_name,
+  is_grantable
+FROM information_schema.applicable_roles;
+```
+
+Equivalent `mz_catalog` query:
+```sql
+SELECT 
+  member.name AS grantee,
+  role.name AS role_name
+FROM mz_catalog.mz_role_members rm
+JOIN mz_catalog.mz_roles member ON rm.member = member.id
+JOIN mz_catalog.mz_roles role ON rm.role_id = role.id;
+```
+
+#### enabled_roles
+
+Lists roles enabled for the current session.
+
+```sql
+-- Show enabled roles
+SELECT role_name
+FROM information_schema.enabled_roles;
+```
+
+#### table_privileges
+
+Lists table-level privileges.
+
+```sql
+-- Show table privileges
+SELECT 
+  table_name,
+  grantee,
+  privilege_type
+FROM information_schema.table_privileges
+WHERE table_schema = 'public';
+```
+
+#### role_table_grants
+
+Lists table grants for roles.
+
+```sql
+-- Show role-specific table grants
+SELECT 
+  grantor,
+  grantee,
+  table_name,
+  privilege_type
+FROM information_schema.role_table_grants
+WHERE table_schema = 'public';
+```
+
+### Trigger Information
+
+#### triggers
+
+<Note>
+Materialize does not currently support triggers. This view exists for compatibility but will typically be empty.
+</Note>
+
+```sql
+-- List triggers (will be empty in Materialize)
+SELECT 
+  trigger_name,
+  event_manipulation,
+  event_object_table
+FROM information_schema.triggers;
+```
+
+### Character Set Information
+
+#### character_sets
+
+Lists available character sets.
+
+```sql
+-- Show character sets
+SELECT 
+  character_set_name,
+  default_collate_name
+FROM information_schema.character_sets;
+```
+
+## Common Queries
+
+### Discover All Tables and Views
+
+```sql
+-- Get all user tables and views
+SELECT 
+  table_schema,
+  table_name,
+  table_type
+FROM information_schema.tables
+WHERE table_schema NOT IN ('mz_catalog', 'mz_internal', 'mz_introspection', 'pg_catalog', 'information_schema')
+ORDER BY table_schema, table_name;
+```
+
+### Inspect Table Schema
+
+```sql
+-- Get complete table structure
+SELECT 
+  ordinal_position,
+  column_name,
+  data_type,
+  is_nullable,
+  column_default,
+  character_maximum_length
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name = 'my_table'
+ORDER BY ordinal_position;
+```
+
+### Find Views That Reference a Table
+
+```sql
+-- Note: This requires checking view definitions
+SELECT 
+  table_name,
+  view_definition
+FROM information_schema.views
+WHERE table_schema = 'public'
+  AND view_definition LIKE '%my_table%';
+```
+
+<Note>
+For more sophisticated dependency tracking, use `mz_internal.mz_compute_dependencies` from the `mz_catalog` schema.
+</Note>
+
+### List All Functions with Return Types
+
+```sql
+SELECT 
+  routine_schema,
+  routine_name,
+  routine_type,
+  data_type AS return_type,
+  type_udt_name
+FROM information_schema.routines
+WHERE routine_schema = 'public'
+ORDER BY routine_name;
+```
+
+### Check User Privileges
+
+```sql
+-- See what privileges current user has
+SELECT DISTINCT
+  table_schema,
+  table_name,
+  privilege_type
+FROM information_schema.table_privileges
+WHERE grantee = CURRENT_USER
+ORDER BY table_schema, table_name, privilege_type;
+```
+
+## Limitations
+
+### Incomplete Column Support
+
+Many standard `information_schema` columns are not populated in Materialize:
+
+- Some columns may always return `NULL`
+- Some columns may be missing entirely
+- Some views may have different behavior than other SQL databases
+
+### Materialize-Specific Concepts
+
+The SQL standard `information_schema` does not represent Materialize-specific concepts:
+
+- **Clusters** and **cluster replicas** are not visible
+- **Materialized views** appear as regular views
+- **Sources** may not be fully represented
+- **Sinks** are not represented
+- **Connections** and **secrets** are not visible
+
+For these objects, you **must** use the `mz_catalog` schema.
+
+### Performance Considerations
+
+Some `information_schema` views may involve complex joins or computations. For performance-critical queries, consider using `mz_catalog` directly.
+
+## Migration from information_schema
+
+If you're using `information_schema` and want to migrate to `mz_catalog`, here are common mappings:
+
+| information_schema | mz_catalog equivalent | Notes |
+|-------------------|----------------------|-------|
+| `schemata` | `mz_schemas` + `mz_databases` | Join to get catalog name |
+| `tables` | `mz_relations` or `mz_objects` | Use `mz_objects` for all object types |
+| `views` | `mz_views` | Does not include materialized views |
+| `columns` | `mz_columns` | Same structure |
+| `routines` | `mz_functions` | More detailed information |
+| `table_privileges` | Use `privileges` column in object tables | Direct array representation |
+
+## Example: Tool Integration
+
+Many SQL tools automatically query `information_schema`. For example, a database explorer might use:
+
+```sql
+-- Tool queries information_schema automatically
+SELECT 
+  t.table_name,
+  COUNT(c.column_name) AS column_count,
+  t.table_type
+FROM information_schema.tables t
+LEFT JOIN information_schema.columns c 
+  ON t.table_name = c.table_name 
+  AND t.table_schema = c.table_schema
+WHERE t.table_schema = 'public'
+GROUP BY t.table_name, t.table_type
+ORDER BY t.table_name;
+```
+
+This query will work in Materialize for basic compatibility, but you'll get more complete results using `mz_catalog`:
+
+```sql
+-- Equivalent query using mz_catalog
+SELECT 
+  r.name AS table_name,
+  COUNT(c.name) AS column_count,
+  r.type AS table_type
+FROM mz_catalog.mz_relations r
+JOIN mz_catalog.mz_schemas s ON r.schema_id = s.id
+LEFT JOIN mz_catalog.mz_columns c ON r.id = c.id
+WHERE s.name = 'public'
+GROUP BY r.name, r.type
+ORDER BY r.name;
+```
+
+## Best Practices
+
+1. **Prefer mz_catalog**: Use `mz_catalog` for new applications and custom tooling
+2. **Check completeness**: Verify that required `information_schema` columns are populated before relying on them
+3. **Test thoroughly**: Some tools may make assumptions about `information_schema` behavior that don't hold in Materialize
+4. **Report issues**: If you encounter compatibility issues with standard tools, report them to Materialize support
+
+## See Also
+
+- [System Catalog Overview](/sql/system-catalog/overview) - Introduction to system catalogs
+- [mz_catalog Reference](/sql/system-catalog/mz-catalog) - Complete native catalog reference
+- [PostgreSQL information_schema](https://www.postgresql.org/docs/current/information-schema.html) - PostgreSQL documentation for comparison

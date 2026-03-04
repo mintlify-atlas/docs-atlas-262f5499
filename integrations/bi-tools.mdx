@@ -1,0 +1,525 @@
+---
+title: 'BI Tools'
+description: 'Connect business intelligence and visualization tools to Materialize'
+---
+
+Materialize integrates with popular BI tools using the PostgreSQL connector. Create real-time dashboards and visualizations that stay up-to-date as your data changes.
+
+## Supported BI Tools
+
+<CardGroup cols={2}>
+  <Card title="Metabase" icon="chart-bar" href="#metabase">
+    Open-source BI with native PostgreSQL support
+  </Card>
+  <Card title="Tableau" icon="chart-line" href="#tableau">
+    Industry-leading visualization platform
+  </Card>
+  <Card title="Looker" icon="eye" href="#looker">
+    Modern business intelligence platform
+  </Card>
+  <Card title="Power BI" icon="chart-pie" href="#power-bi">
+    Microsoft's enterprise BI solution
+  </Card>
+  <Card title="Hex" icon="hexagon" href="#hex">
+    Collaborative data notebooks
+  </Card>
+  <Card title="Deepnote" icon="notebook" href="#deepnote">
+    Real-time collaborative notebooks
+  </Card>
+</CardGroup>
+
+## Connection Parameters
+
+All BI tools connect to Materialize using these standard PostgreSQL parameters:
+
+| Parameter | Value |
+|-----------|-------|
+| **Database Type** | PostgreSQL |
+| **Host** | Your Materialize hostname (e.g., `instance.region.aws.materialize.cloud`) |
+| **Port** | `6875` |
+| **Database** | `materialize` |
+| **Username** | Your Materialize user (email address) |
+| **Password** | App-specific password (starts with `mzp_`) |
+| **SSL Mode** | Require |
+
+<Warning>
+Before connecting, ensure you've created an **app password** in the [Materialize console](/console/). This password is auto-generated and prefixed with `mzp_`.
+</Warning>
+
+## Metabase
+
+[Metabase](https://www.metabase.com/) is an open-source BI tool that makes it easy to create dashboards and visualizations.
+
+### Setup
+
+1. In Metabase, click **Add a database**
+2. Select **PostgreSQL** as the database type
+3. Configure the connection:
+
+   | Field | Value |
+   |-------|-------|
+   | Display name | `Materialize` |
+   | Host | Your Materialize hostname |
+   | Port | `6875` |
+   | Database name | `materialize` |
+   | Username | Your Materialize user email |
+   | Password | Your app password (`mzp_...`) |
+   | SSL | On (require) |
+
+4. Click **Save**
+
+### Connecting to a Specific Cluster
+
+To connect to a specific cluster instead of the default:
+
+1. After creating the connection, go to **Connection details**
+2. Navigate to **Connection initialization settings**
+3. Under **Bootstrap queries**, add:
+
+   ```sql
+   SET cluster = your_cluster_name;
+   ```
+
+Alternatively, set the default cluster for your user:
+
+```sql
+ALTER ROLE "user@example.com" SET cluster = analytics_cluster;
+```
+
+### Refresh Rate
+
+By default, Metabase dashboards refresh every 1 minute. You can set a faster refresh rate:
+
+1. Add `#refresh=5` to the dashboard URL for 5-second refresh
+2. Or use `#refresh=1` for 1-second refresh
+
+Example:
+```
+https://metabase.example.com/dashboard/123#refresh=5
+```
+
+<Info>
+Because Materialize maintains materialized views incrementally, frequent dashboard refreshes have minimal performance impact. We recommend adding indexes to objects queried by Metabase.
+</Info>
+
+## Tableau
+
+[Tableau](https://www.tableau.com/) supports Materialize through both Tableau Cloud and Tableau Desktop.
+
+### Tableau Cloud
+
+Connect directly using the PostgreSQL connector:
+
+1. In Tableau Cloud, create a new data source
+2. Select **PostgreSQL** as the connector
+3. Enter connection details:
+
+   | Field | Value |
+   |-------|-------|
+   | Server | Your Materialize hostname |
+   | Port | `6875` |
+   | Database | `materialize` |
+   | Username | Your Materialize user email |
+   | Password | Your app password |
+   | Require SSL | ✓ Checked |
+
+4. Click **Sign In**
+
+### Tableau Desktop
+
+#### Setup
+
+Tableau Desktop requires the PostgreSQL JDBC driver:
+
+<Tabs>
+  <Tab title="macOS">
+    1. Download the [PostgreSQL JDBC driver](https://jdbc.postgresql.org/download/)
+    2. Copy the `.jar` file to:
+       ```
+       ~/Library/Tableau/Drivers
+       ```
+    3. Create the directory if it doesn't exist
+    4. Restart Tableau Desktop
+  </Tab>
+  <Tab title="Windows">
+    1. Download the [PostgreSQL JDBC driver](https://jdbc.postgresql.org/download/)
+    2. Copy the `.jar` file to:
+       ```
+       C:\Program Files\Tableau\Drivers
+       ```
+    3. Create the directory if it doesn't exist
+    4. Restart Tableau Desktop
+  </Tab>
+  <Tab title="Linux">
+    1. Download the [PostgreSQL JDBC driver](https://jdbc.postgresql.org/download/)
+    2. Copy the `.jar` file to:
+       ```
+       /opt/tableau/tableau_driver/jdbc
+       ```
+    3. Create the directory if it doesn't exist
+    4. Restart Tableau Desktop
+  </Tab>
+</Tabs>
+
+#### Connection
+
+1. In Tableau Desktop, go to **Connect to a Server**
+2. Select **More** → **PostgreSQL**
+3. Enter connection details:
+
+   | Field | Value |
+   |-------|-------|
+   | Server | Your Materialize hostname |
+   | Port | `6875` |
+   | Database | `materialize` |
+   | Authentication | Username and Password |
+   | Username | Your Materialize user email |
+   | Password | Your app password |
+   | Require SSL | ✓ Checked |
+
+4. Click **Sign In**
+
+#### Troubleshooting
+
+If you see these errors, the JDBC driver wasn't installed correctly:
+
+```
+ERROR: Expected FOR, found WITH
+ERROR: WITH HOLD is unsupported for cursors
+```
+
+Tableau is falling back to an ODBC driver. Verify the JDBC driver is in the correct folder and restart Tableau.
+
+### Configure Cluster
+
+To use a specific cluster:
+
+```sql
+ALTER ROLE "user@example.com" SET cluster = analytics_cluster;
+```
+
+## Looker
+
+[Looker](https://cloud.google.com/looker) connects to Materialize using the PostgreSQL 9.5+ dialect.
+
+### Setup
+
+1. In Looker, go to **Admin** → **Connections**
+2. Click **Add Connection**
+3. Configure:
+
+   | Field | Value |
+   |-------|-------|
+   | Dialect | PostgreSQL 9.5+ |
+   | Host | Your Materialize hostname |
+   | Port | `6875` |
+   | Database | `materialize` |
+   | Schema | `public` |
+   | Username | Your Materialize user email |
+   | Password | Your app password |
+
+4. Click **Test** then **Connect**
+
+### Known Limitations
+
+#### 1. Connection Test Warning
+
+You may see this warning when testing the connection:
+
+```
+Test kill: Cannot cancel queries: Query could not be found in database.
+```
+
+<Info>
+This warning can be safely ignored. It occurs because Looker tests query cancellation using `pg_stat_activity`, which Materialize doesn't currently support.
+</Info>
+
+To manually cancel a query:
+
+```sql
+-- Find the connection ID
+SELECT * FROM mz_sessions;
+
+-- Cancel the query
+SELECT pg_cancel_backend(connection_id) 
+FROM mz_sessions 
+WHERE id = 'session_id';
+```
+
+Or use the [Materialize Console](/console/) → **Query History** → **Request Cancellation**.
+
+#### 2. Symmetric Aggregates
+
+Looker uses symmetric aggregates that rely on the `BIT` type, which Materialize doesn't support.
+
+**Workarounds:**
+
+- Disable symmetric aggregates in your Looker project ([documentation](https://cloud.google.com/looker/docs/reference/param-explore-symmetric-aggregates))
+- Use non-symmetric aggregations (Looker remains fully functional)
+- Contact Materialize support for optimization guidance
+
+### Configure Cluster
+
+```sql
+ALTER ROLE "user@example.com" SET cluster = analytics_cluster;
+```
+
+## Power BI
+
+[Power BI](https://powerbi.microsoft.com/) is Microsoft's business intelligence platform.
+
+### Setup
+
+1. In Power BI Desktop, click **Get Data**
+2. Search for and select **PostgreSQL database**
+3. Enter connection details:
+
+   | Field | Value |
+   |-------|-------|
+   | Server | `instance.region.aws.materialize.cloud:6875` |
+   | Database | `materialize` |
+   | Data Connectivity mode | **DirectQuery** |
+
+4. Click **OK**
+5. Enter credentials:
+   - Username: Your Materialize user email
+   - Password: Your app password
+6. Click **Connect**
+
+<Warning>
+**Important:** The server field must include the port number (`:6875`) and should NOT include `http://`, `https://`, or a trailing slash.
+</Warning>
+
+### Materialized Views Limitation
+
+Power BI does not display materialized views in the table list ([known limitation](https://ideas.fabric.microsoft.com/ideas/idea/?ideaid=92420736-afdc-45b9-8962-743a53acfa66)).
+
+**Workarounds:**
+
+1. **Create a regular view:**
+   ```sql
+   CREATE VIEW my_view_bi AS SELECT * FROM my_materialized_view;
+   ```
+   Then use `my_view_bi` in Power BI.
+
+2. **Use an indexed view instead:**
+   ```sql
+   CREATE VIEW my_view AS SELECT * FROM my_source;
+   CREATE INDEX idx ON my_view(column);
+   ```
+
+3. **Use Native Query Folding:**
+   ```
+   = Value.NativeQuery(Source, "SELECT * FROM my_materialized_view;")
+   ```
+
+### Troubleshooting
+
+**Error: "A non-recoverable error happened during a database lookup"**
+
+- Check the server name format (should be `host:6875`)
+- Don't include protocol or trailing slash
+
+**Error: "No password has been provided but the backend requires one"**
+
+1. Go to **File** → **Options and settings** → **Data source settings**
+2. Delete any Materialize entries
+3. Try connecting again
+
+### Configure Cluster
+
+```sql
+ALTER ROLE "user@example.com" SET cluster = analytics_cluster;
+```
+
+## Hex
+
+[Hex](https://hex.tech/) is a collaborative data workspace.
+
+### Setup
+
+1. In Hex, go to **Workspace Settings** → **Integrations**
+2. Click **Add** → **PostgreSQL**
+3. Configure connection:
+   - Host: Your Materialize hostname
+   - Port: `6875`
+   - Database: `materialize`
+   - Username: Your Materialize user email
+   - Password: Your app password
+   - SSL: Required
+4. Click **Test Connection** → **Save**
+
+### Using in Notebooks
+
+```python
+import hex
+
+# Query Materialize
+df = hex.query("SELECT * FROM my_view")
+
+# Use in visualizations
+hex.viz.plot(df, x='timestamp', y='value')
+```
+
+## Deepnote
+
+[Deepnote](https://deepnote.com/) is a collaborative data notebook platform.
+
+### Setup
+
+1. In your Deepnote project, click **Integrations**
+2. Select **PostgreSQL**
+3. Enter connection details:
+   - Hostname: Your Materialize hostname
+   - Port: `6875`
+   - Database: `materialize`
+   - Username: Your Materialize user email
+   - Password: Your app password
+4. Click **Create Integration**
+
+### Using in Notebooks
+
+```python
+import deepnote
+
+# Query Materialize
+df = deepnote.query("SELECT * FROM my_view")
+
+# Display results
+df.head()
+```
+
+## Excel
+
+Connect Excel to Materialize via ODBC:
+
+1. Install the [PostgreSQL ODBC driver](https://www.postgresql.org/ftp/odbc/versions/)
+2. In Excel, go to **Data** → **Get Data** → **From Other Sources** → **From ODBC**
+3. Configure the DSN with Materialize connection parameters
+4. Import data from tables and views
+
+## Best Practices
+
+### 1. Use Clusters for Isolation
+
+Separate BI workloads from production:
+
+```sql
+CREATE CLUSTER bi_cluster (SIZE = 'medium');
+ALTER ROLE "analyst@example.com" SET cluster = bi_cluster;
+```
+
+### 2. Add Indexes
+
+Improve dashboard performance with strategic indexes:
+
+```sql
+CREATE INDEX idx_user_id ON user_events(user_id);
+```
+
+### 3. Use Materialized Views
+
+Pre-compute complex aggregations:
+
+```sql
+CREATE MATERIALIZED VIEW daily_metrics AS
+SELECT 
+    DATE(timestamp) as date,
+    COUNT(*) as event_count,
+    COUNT(DISTINCT user_id) as unique_users
+FROM events
+GROUP BY DATE(timestamp);
+```
+
+### 4. Monitor Query Performance
+
+Check slow queries in the Materialize console:
+
+```sql
+SELECT * FROM mz_internal.mz_recent_activity_log
+WHERE execution_time_ms > 1000
+ORDER BY execution_time_ms DESC;
+```
+
+### 5. Set Connection Limits
+
+Limit concurrent connections per BI tool:
+
+```sql
+ALTER ROLE "bi_user@example.com" CONNECTION LIMIT 10;
+```
+
+## Refresh Rates
+
+Because Materialize maintains views incrementally, you can set aggressive refresh rates without performance penalties:
+
+- **Metabase**: 1-5 seconds
+- **Tableau**: Live connection mode
+- **Looker**: Real-time queries
+- **Power BI**: DirectQuery mode
+
+<Info>
+Unlike traditional databases, frequent queries against Materialize don't trigger expensive computations. Results are always up-to-date.
+</Info>
+
+## Troubleshooting
+
+### Cannot Connect
+
+- Verify hostname and port (6875)
+- Check SSL is enabled/required
+- Confirm app password is correct
+- Test with `psql` first
+
+### Materialized Views Not Visible
+
+Some BI tools don't detect materialized views:
+
+- Create regular views that SELECT from materialized views
+- Use native SQL queries
+- Add indexes to regular views
+
+### Slow Queries
+
+- Add indexes on filtered/joined columns
+- Use appropriate cluster size
+- Check query execution plan
+- Monitor resource usage in console
+
+### Feature Not Supported
+
+Some PostgreSQL features aren't in Materialize:
+
+- Check [SQL compatibility](/sql/compatibility)
+- Use alternative SQL patterns
+- Submit [feature requests](https://github.com/MaterializeInc/materialize/discussions/new?category=feature-requests)
+
+## System Requirements
+
+All BI tools need:
+
+- Outbound network access to port 6875
+- SSL/TLS support
+- PostgreSQL driver/connector
+- Materialize app password
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Create Materialized Views" icon="database" href="/sql/create-materialized-view">
+    Pre-compute aggregations for dashboards
+  </Card>
+  <Card title="Add Indexes" icon="list" href="/sql/create-index">
+    Optimize query performance
+  </Card>
+  <Card title="Manage Clusters" icon="server" href="/sql/create-cluster">
+    Isolate BI workloads
+  </Card>
+  <Card title="Monitor Performance" icon="gauge" href="/console">
+    Track queries and resource usage
+  </Card>
+</CardGroup>
+
+## Request Support for New Tools
+
+Need integration with another BI tool? [Submit a feature request](https://github.com/MaterializeInc/materialize/discussions/new?category=feature-requests&labels=A-integration) on GitHub.

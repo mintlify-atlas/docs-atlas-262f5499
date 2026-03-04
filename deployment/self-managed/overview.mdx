@@ -1,0 +1,287 @@
+---
+title: "Self-Managed Materialize Overview"
+description: "Deploy and manage Materialize in your own infrastructure using Kubernetes."
+---
+
+## What is Self-Managed Materialize?
+
+Self-Managed Materialize allows you to deploy and operate Materialize in your own infrastructure using Kubernetes. This deployment model provides complete control over:
+
+- **Infrastructure**: Deploy on any Kubernetes cluster (AWS EKS, GCP GKE, Azure AKS, or on-premises)
+- **Data residency**: Keep all data within your own environment
+- **Network configuration**: Full control over network policies and connectivity
+- **Compliance**: Meet strict regulatory requirements for data handling
+- **Resource management**: Direct control over compute, memory, and storage resources
+
+<Note>
+Self-managed deployments require Kubernetes expertise and operational overhead. Consider [Materialize Cloud](/deployment/cloud/overview) for a fully-managed option.
+</Note>
+
+## Architecture
+
+Self-Managed Materialize runs on Kubernetes using the Materialize Operator:
+
+```
+┌─────────────────────────────────────────────────────┐
+│              Kubernetes Cluster                      │
+│                                                       │
+│  ┌──────────────────────────────────────────┐      │
+│  │     Materialize Operator                 │      │
+│  │  (orchestratord)                         │      │
+│  └──────────────┬───────────────────────────┘      │
+│                 │                                    │
+│  ┌──────────────▼───────────────────────────┐      │
+│  │   Materialize Environment                │      │
+│  │                                           │      │
+│  │  ┌─────────────┐  ┌────────────────┐    │      │
+│  │  │ environmentd │  │   balancerd    │    │      │
+│  │  │ (SQL Layer)  │  │ (Load Balancer)│    │      │
+│  │  └─────────────┘  └────────────────┘    │      │
+│  │                                           │      │
+│  │  ┌─────────────────────────────────┐    │      │
+│  │  │      clusterd (Workers)          │    │      │
+│  │  │  ┌──────┐ ┌──────┐ ┌──────┐     │    │      │
+│  │  │  │ Pod  │ │ Pod  │ │ Pod  │     │    │      │
+│  │  │  └──────┘ └──────┘ └──────┘     │    │      │
+│  │  └─────────────────────────────────┘    │      │
+│  │                                           │      │
+│  │  ┌─────────────┐                         │      │
+│  │  │   console   │                         │      │
+│  │  │ (Web UI)    │                         │      │
+│  │  └─────────────┘                         │      │
+│  └───────────────────────────────────────────┘      │
+│                                                       │
+│  ┌──────────────┐  ┌─────────────────┐              │
+│  │  PostgreSQL  │  │   Object Store  │              │
+│  │  (Metadata)  │  │  (S3/Minio)     │              │
+│  └──────────────┘  └─────────────────┘              │
+└─────────────────────────────────────────────────────┘
+```
+
+### Components
+
+#### Materialize Operator (orchestratord)
+
+The operator manages the lifecycle of Materialize environments:
+
+- **Custom Resource Definitions (CRDs)**: Define Materialize environments declaratively
+- **Reconciliation**: Ensures actual state matches desired state
+- **Upgrades**: Manages rolling upgrades with minimal downtime
+- **Scaling**: Handles cluster scaling and replica management
+
+Helm chart: `misc/helm-charts/operator`
+
+#### environmentd
+
+The SQL interface and query coordinator:
+
+- Accepts PostgreSQL wire protocol connections on port 6875
+- HTTP API on port 6876
+- Coordinates query execution across compute clusters
+- Manages catalog and metadata
+
+Default resources:
+- CPU: 1 core
+- Memory: 4 GiB
+
+#### clusterd
+
+Distributed compute workers:
+
+- Execute data processing and maintain materialized views
+- Run as pods on Kubernetes nodes
+- Scale horizontally based on workload
+- Require local NVMe storage for optimal performance
+
+Resources vary by cluster size (25cc to 6400cc).
+
+#### balancerd
+
+Load balancer for SQL connections:
+
+- Distributes connections across environmentd replicas
+- Provides health checking and failover
+- Exposes external SQL endpoint
+
+Default resources:
+- CPU: 500m
+- Memory: 256 MiB
+
+#### console
+
+Web-based management interface:
+
+- Environment monitoring and metrics
+- Query history and performance analysis
+- Cluster management UI
+- User and role management
+
+Default resources:
+- CPU: 500m
+- Memory: 256 MiB
+
+## Prerequisites
+
+### Kubernetes Requirements
+
+- **Kubernetes version**: 1.29 or later
+- **Helm**: 3.2.0 or later
+- **Storage**: Local NVMe storage with provisioner (OpenEBS recommended)
+- **Node requirements**:
+  - ARM-based CPU (AWS Graviton, GCP Tau, or equivalent)
+  - 1:8 ratio of vCPU to GiB memory
+  - Local instance storage (for spill-to-disk)
+
+### Recommended Instance Types
+
+#### AWS
+- `r7g.xlarge` to `r7g.16xlarge` (with local NVMe)
+- `r7gd.xlarge` to `r7gd.16xlarge` (with instance store)
+- `r6g`, `r6gd` families also supported
+
+#### GCP
+- `n2-standard-*` series with local SSDs
+- `c2-standard-*` series with local SSDs
+- `tau-*` series (Arm-based)
+
+#### Azure
+- `D-series` v5 with local NVMe
+- `E-series` v5 with local NVMe
+
+### External Dependencies
+
+#### PostgreSQL or CockroachDB (Metadata Store)
+
+Materialize requires a PostgreSQL-compatible database for metadata:
+
+- **PostgreSQL**: Version 13 or later
+- **CockroachDB**: Version 23.1 or later (recommended)
+
+Example connection string:
+```
+postgres://materialize_user:password@postgres.example.com:5432/materialize_db?sslmode=require
+```
+
+#### Object Storage (Persist Backend)
+
+Materialize uses object storage for durable data:
+
+- **AWS S3**: Recommended for AWS deployments
+- **GCS**: Recommended for GCP deployments
+- **Azure Blob Storage**: Recommended for Azure deployments
+- **MinIO**: For on-premises or testing
+
+Example connection string:
+```
+s3://bucket-name/path?endpoint=https://s3.region.amazonaws.com&region=us-east-1
+```
+
+## Deployment Options
+
+### Kubernetes Deployment
+
+The recommended deployment method using Helm charts:
+
+- Install Materialize Operator via Helm
+- Deploy Materialize environments using Custom Resources
+- Manage via kubectl and Kubernetes APIs
+
+[Learn more →](/deployment/self-managed/kubernetes)
+
+### Docker Deployment
+
+For testing and development:
+
+- Run Materialize containers with Docker Compose
+- Suitable for local development
+- Not recommended for production
+
+[Learn more →](/deployment/self-managed/docker)
+
+## Licensing
+
+Self-managed deployments require a valid license key:
+
+- **Trial licenses**: Available for evaluation (contact Materialize)
+- **Commercial licenses**: Required for production use
+- **License enforcement**: Newer versions enforce license key checks
+
+Set the license key in your environment secret:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: materialize-backend
+stringData:
+  license_key: "your-license-key-here"
+```
+
+<Warning>
+Materialize will not start without a valid license key in recent versions.
+</Warning>
+
+## Support
+
+Self-managed deployments are supported through:
+
+- **Documentation**: Comprehensive deployment guides
+- **GitHub**: Source code and issue tracking
+- **Enterprise support**: Available for commercial customers
+- **Community**: Slack channel for community support
+
+### Support Scope
+
+Materialize provides support for:
+
+- Materialize software issues and bugs
+- Configuration guidance
+- Upgrade assistance
+- Performance tuning recommendations
+
+Customers are responsible for:
+
+- Kubernetes cluster management
+- Infrastructure provisioning and scaling
+- Backup and disaster recovery operations
+- Monitoring and alerting setup
+
+## Comparison: Cloud vs Self-Managed
+
+| Feature | Materialize Cloud | Self-Managed |
+|---------|-------------------|-------------|
+| **Infrastructure** | Managed by Materialize | You manage |
+| **Kubernetes** | Not required | Required |
+| **Upgrades** | Automatic | Manual |
+| **Scaling** | Automatic | Manual |
+| **Monitoring** | Included | You configure |
+| **SLA** | 99.9% uptime | You manage |
+| **Data residency** | Select region | Full control |
+| **Cost** | Credit-based pricing | Infrastructure + license |
+| **Support** | 24/7 included | Commercial license |
+| **Time to deploy** | 2-3 minutes | Hours to days |
+| **Operational burden** | Low | High |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Kubernetes Deployment" icon="dharmachakra" href="/deployment/self-managed/kubernetes">
+    Deploy Materialize on Kubernetes using Helm
+  </Card>
+  <Card title="Docker Deployment" icon="docker" href="/deployment/self-managed/docker">
+    Run Materialize locally with Docker Compose
+  </Card>
+  <Card title="Configuration Reference" icon="gear" href="/deployment/self-managed/configuration">
+    Detailed configuration options and parameters
+  </Card>
+  <Card title="Operational Guidelines" icon="book" href="/manage/operational-guidelines">
+    Best practices for running Materialize in production
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [Materialize GitHub Repository](https://github.com/MaterializeInc/materialize)
+- [Helm Chart Documentation](https://github.com/MaterializeInc/materialize/tree/main/misc/helm-charts/operator)
+- [Kubernetes Operator Guide](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
+- [OpenEBS Documentation](https://openebs.io/docs)

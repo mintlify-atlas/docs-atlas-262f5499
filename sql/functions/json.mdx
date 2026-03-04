@@ -1,0 +1,652 @@
+---
+title: JSON Functions
+description: SQL functions and operators for working with JSONB data
+---
+
+Materialize provides comprehensive support for working with JSON data through the `jsonb` type and associated functions and operators.
+
+## JSONB Type Overview
+
+The `jsonb` type stores JSON (JavaScript Object Notation) data in a binary format, similar to PostgreSQL's implementation.
+
+```sql
+SELECT '{"name": "Alice", "age": 30}'::jsonb AS user_data;
+```
+
+**Supported JSON Elements:**
+- Objects: `{"key": "value"}`
+- Arrays: `[1, 2, 3]`
+- Strings: `"text"`
+- Numbers: `123`, `45.67`
+- Booleans: `true`, `false`
+- Null: `null`
+
+<Note>
+All numbers in JSONB are stored as `numeric` type in SQL.
+</Note>
+
+## JSON Operators
+
+### Field Access as JSONB (->)
+
+Access JSON object fields or array elements, returning `jsonb`.
+
+**Object field access:**
+```sql
+SELECT '{"name": "Alice", "age": 30}'::jsonb -> 'name' AS name;
+-- Result: "Alice" (as jsonb)
+
+SELECT '{"user": {"name": "Alice"}}'::jsonb -> 'user' AS user_obj;
+-- Result: {"name": "Alice"}
+```
+
+**Array element access (0-indexed):**
+```sql
+SELECT '["a", "b", "c"]'::jsonb -> 1 AS element;
+-- Result: "b" (as jsonb)
+
+SELECT '[10, 20, 30]'::jsonb -> 0 AS first;
+-- Result: 10
+```
+
+**Chained access:**
+```sql
+SELECT '{"user": {"name": "Alice", "tags": ["admin", "user"]}}'::jsonb 
+    -> 'user' -> 'tags' -> 0 AS first_tag;
+-- Result: "admin"
+```
+
+### Field Access as Text (->>) 
+
+Access JSON fields or array elements, returning `text`.
+
+```sql
+SELECT '{"name": "Alice", "age": 30}'::jsonb ->> 'name' AS name;
+-- Result: Alice (as text, no quotes)
+
+SELECT '["a", "b", "c"]'::jsonb ->> 1 AS element;
+-- Result: b (as text)
+
+SELECT '{"count": 42}'::jsonb ->> 'count' AS count_text;
+-- Result: 42 (as text)
+```
+
+**Chained access:**
+```sql
+SELECT '{"user": {"address": {"city": "NYC"}}}'::jsonb 
+    -> 'user' -> 'address' ->> 'city' AS city;
+-- Result: NYC (as text)
+```
+
+### Path Access as JSONB (#>)
+
+Access nested elements using a text array path:
+
+```sql
+SELECT '{"user": {"name": "Alice", "tags": ["admin", "user"]}}'::jsonb 
+    #> '{user,name}' AS name;
+-- Result: "Alice" (as jsonb)
+
+SELECT '{"user": {"tags": ["admin", "user"]}}'::jsonb 
+    #> '{user,tags,1}' AS second_tag;
+-- Result: "user"
+```
+
+### Path Access as Text (#>>)
+
+Access nested elements using a path, returning text:
+
+```sql
+SELECT '{"user": {"name": "Alice"}}'::jsonb #>> '{user,name}' AS name;
+-- Result: Alice (as text)
+
+SELECT '{"data": {"items": [10, 20, 30]}}'::jsonb 
+    #>> '{data,items,2}' AS third_item;
+-- Result: 30 (as text)
+```
+
+### Contains (@>)
+
+Check if the left JSONB contains the right JSONB:
+
+```sql
+SELECT '{"name": "Alice", "age": 30, "city": "NYC"}'::jsonb 
+    @> '{"name": "Alice"}'::jsonb AS contains;
+-- Result: true
+
+SELECT '{"tags": ["a", "b", "c"]}'::jsonb 
+    @> '{"tags": ["b"]}'::jsonb AS contains;
+-- Result: true
+
+SELECT '{"x": 1}'::jsonb @> '{"x": 2}'::jsonb AS contains;
+-- Result: false
+```
+
+### Contained By
+
+Check if the left JSONB is contained by the right JSONB:
+
+```sql
+SELECT '{"name": "Alice"}'::jsonb 
+    <@ '{"name": "Alice", "age": 30}'::jsonb AS contained;
+-- Result: true
+```
+
+### Key Exists (?)
+
+Check if a key exists at the top level:
+
+```sql
+SELECT '{"name": "Alice", "age": 30}'::jsonb ? 'name' AS has_name;
+-- Result: true
+
+SELECT '{"name": "Alice", "age": 30}'::jsonb ? 'email' AS has_email;
+-- Result: false
+
+-- Only checks top-level keys
+SELECT '{"user": {"name": "Alice"}}'::jsonb ? 'name' AS has_name;
+-- Result: false (name is nested, not top-level)
+```
+
+### Any Key Exists (?|)
+
+Check if any of the specified keys exist:
+
+```sql
+SELECT '{"name": "Alice", "age": 30}'::jsonb ?| ARRAY['email', 'age'] AS has_any;
+-- Result: true (age exists)
+```
+
+### All Keys Exist (?&)
+
+Check if all specified keys exist:
+
+```sql
+SELECT '{"name": "Alice", "age": 30}'::jsonb ?& ARRAY['name', 'age'] AS has_all;
+-- Result: true
+
+SELECT '{"name": "Alice", "age": 30}'::jsonb ?& ARRAY['name', 'email'] AS has_all;
+-- Result: false (email missing)
+```
+
+### Concatenation (||)
+
+Merge two JSONB objects or arrays:
+
+```sql
+SELECT '{"a": 1}'::jsonb || '{"b": 2}'::jsonb AS merged;
+-- Result: {"a": 1, "b": 2}
+
+SELECT '[1, 2]'::jsonb || '[3, 4]'::jsonb AS merged;
+-- Result: [1, 2, 3, 4]
+
+-- Right side overwrites left on key collision
+SELECT '{"a": 1, "b": 2}'::jsonb || '{"b": 3, "c": 4}'::jsonb AS merged;
+-- Result: {"a": 1, "b": 3, "c": 4}
+```
+
+### Remove Key (-)
+
+Remove a key from a JSONB object:
+
+```sql
+SELECT '{"a": 1, "b": 2, "c": 3}'::jsonb - 'b' AS removed;
+-- Result: {"a": 1, "c": 3}
+
+SELECT '{"name": "Alice", "temp": "data"}'::jsonb - 'temp' AS cleaned;
+-- Result: {"name": "Alice"}
+```
+
+### Remove Array Element (-)
+
+Remove an array element by index:
+
+```sql
+SELECT '["a", "b", "c"]'::jsonb - 1 AS removed;
+-- Result: ["a", "c"]
+```
+
+## JSON Functions
+
+### Aggregate Functions
+
+#### jsonb_agg
+
+Aggregate values into a JSONB array:
+
+```sql
+SELECT jsonb_agg(name ORDER BY name) AS names
+FROM users;
+
+SELECT 
+    department,
+    jsonb_agg(employee ORDER BY hire_date) AS employees
+FROM employees
+GROUP BY department;
+```
+
+**With filtering:**
+```sql
+SELECT
+  jsonb_agg(t ORDER BY t.id) FILTER (WHERE t.content LIKE 'h%') AS filtered
+FROM (
+  VALUES (1, 'hey'), (2, NULL), (3, 'hi'), (4, 'bye')
+) AS t(id, content);
+-- Result: [{"content":"hey","id":1},{"content":"hi","id":3}]
+```
+
+<Warning>
+Materializing `jsonb_agg` is an anti-pattern. Materialize the base data, then create a non-materialized view with `jsonb_agg`.
+</Warning>
+
+#### jsonb_object_agg
+
+Aggregate key-value pairs into a JSONB object:
+
+```sql
+SELECT jsonb_object_agg(key, value) AS settings
+FROM config;
+
+SELECT
+  jsonb_object_agg(product_id, price ORDER BY updated_at DESC) AS prices
+FROM price_history
+WHERE updated_at > now() - INTERVAL '1 day';
+```
+
+**Example with duplicates:**
+```sql
+SELECT
+  jsonb_object_agg(k, v ORDER BY ts DESC) AS latest_values
+FROM (
+  VALUES 
+    ('status', 'pending', '2024-01-01'::timestamp),
+    ('status', 'active', '2024-01-02'::timestamp),
+    ('priority', 'high', '2024-01-01'::timestamp)
+) AS t(k, v, ts);
+-- Result: {"status": "active", "priority": "high"}
+```
+
+### Construction Functions
+
+#### jsonb_build_array
+
+Construct a JSONB array from arguments:
+
+```sql
+SELECT jsonb_build_array('a', 1, 2.5, true, NULL) AS arr;
+-- Result: ["a", 1, 2.5, true, null]
+
+SELECT jsonb_build_array(name, email, created_at) AS user_array
+FROM users;
+```
+
+#### jsonb_build_object
+
+Construct a JSONB object from alternating keys and values:
+
+```sql
+SELECT jsonb_build_object('name', 'Alice', 'age', 30, 'active', true) AS obj;
+-- Result: {"name": "Alice", "age": 30, "active": true}
+
+SELECT jsonb_build_object(
+    'id', user_id,
+    'name', username,
+    'email', email
+) AS user_obj
+FROM users;
+```
+
+#### to_jsonb
+
+Convert a SQL value to JSONB:
+
+```sql
+SELECT to_jsonb('hello'::text) AS str;
+-- Result: "hello"
+
+SELECT to_jsonb(42) AS num;
+-- Result: 42
+
+SELECT to_jsonb(row(1, 'Alice', 30)) AS record;
+-- Result: {"f1": 1, "f2": "Alice", "f3": 30}
+
+-- Convert entire rows
+SELECT to_jsonb(users.*) AS user_json
+FROM users;
+```
+
+### Extraction Functions (Table Functions)
+
+#### jsonb_array_elements
+
+Expand a JSONB array to a set of JSONB values:
+
+```sql
+SELECT * FROM jsonb_array_elements('[1, 2, 3, 4]'::jsonb);
+-- Result: 4 rows with values 1, 2, 3, 4
+
+SELECT value->>'name' AS name
+FROM jsonb_array_elements(
+    '[{"name": "Alice"}, {"name": "Bob"}]'::jsonb
+) AS value;
+-- Result: Alice, Bob
+```
+
+**Flattening nested arrays:**
+```sql
+SELECT 
+    t.id,
+    obj->>'name' AS name,
+    obj->>'role' AS role
+FROM (
+  VALUES
+    (1, '[{"name":"Alice","role":"admin"},{"name":"Bob","role":"user"}]'::jsonb),
+    (2, '[{"name":"Carol","role":"admin"}]'::jsonb)
+) AS t(id, json_col)
+CROSS JOIN jsonb_array_elements(t.json_col) AS obj;
+```
+
+#### jsonb_array_elements_text
+
+Expand a JSONB array to a set of text values:
+
+```sql
+SELECT * FROM jsonb_array_elements_text('["a", "b", "c"]'::jsonb);
+-- Result: 3 rows with text values a, b, c
+```
+
+#### jsonb_each
+
+Expand a JSONB object to key-value pairs (value as JSONB):
+
+```sql
+SELECT * FROM jsonb_each('{"a": 1, "b": 2, "c": 3}'::jsonb);
+-- Result:
+-- key | value
+-- ----+-------
+-- a   | 1
+-- b   | 2
+-- c   | 3
+
+SELECT key, value::int * 2 AS doubled
+FROM jsonb_each('{"x": 10, "y": 20}'::jsonb);
+```
+
+#### jsonb_each_text
+
+Expand a JSONB object to key-value pairs (value as text):
+
+```sql
+SELECT * FROM jsonb_each_text('{"name": "Alice", "age": 30}'::jsonb);
+-- Result:
+-- key  | value
+-- -----+-------
+-- name | Alice
+-- age  | 30
+```
+
+#### jsonb_object_keys
+
+Get all top-level keys from a JSONB object:
+
+```sql
+SELECT * FROM jsonb_object_keys('{"a": 1, "b": 2, "c": 3}'::jsonb);
+-- Result: 3 rows: a, b, c
+
+SELECT jsonb_object_keys(metadata) AS key
+FROM products
+WHERE jsonb_object_keys(metadata) LIKE 'feature_%';
+```
+
+### Utility Functions
+
+#### jsonb_array_length
+
+Get the number of elements in a JSONB array:
+
+```sql
+SELECT jsonb_array_length('[1, 2, 3, 4, 5]'::jsonb) AS length;
+-- Result: 5
+
+SELECT product_id, jsonb_array_length(tags) AS tag_count
+FROM products;
+```
+
+#### jsonb_typeof
+
+Get the type of a JSONB value:
+
+```sql
+SELECT jsonb_typeof('[1, 2, 3]'::jsonb) AS type;
+-- Result: array
+
+SELECT jsonb_typeof('{"a": 1}'::jsonb) AS type;
+-- Result: object
+
+SELECT jsonb_typeof('"text"'::jsonb) AS type;
+-- Result: string
+
+SELECT jsonb_typeof('123'::jsonb) AS type;
+-- Result: number
+
+SELECT jsonb_typeof('true'::jsonb) AS type;
+-- Result: boolean
+
+SELECT jsonb_typeof('null'::jsonb) AS type;
+-- Result: null
+```
+
+#### jsonb_strip_nulls
+
+Remove null values from a JSONB object (recursively for nested objects):
+
+```sql
+SELECT jsonb_strip_nulls('{"a": 1, "b": null, "c": 3}'::jsonb) AS cleaned;
+-- Result: {"a": 1, "c": 3}
+
+SELECT jsonb_strip_nulls('[{"a":1,"b":null},"x",null]'::jsonb) AS cleaned;
+-- Result: [{"a":1},"x",null]
+-- Note: Array null elements are preserved, only object nulls removed
+```
+
+#### jsonb_pretty
+
+Format JSONB with indentation for readability:
+
+```sql
+SELECT jsonb_pretty('{"name":"Alice","tags":["a","b"]}'::jsonb);
+-- Result:
+-- {
+--   "name": "Alice",
+--   "tags": [
+--     "a",
+--     "b"
+--   ]
+-- }
+```
+
+## Subscript Notation
+
+Access JSONB elements using array-style subscripts:
+
+```sql
+-- Array access (0-indexed)
+SELECT ('[1, 2, 3]'::jsonb)[1] AS element;
+-- Result: 2
+
+-- Object key access
+SELECT ('{"name": "Alice", "age": 30}'::jsonb)['name'] AS name;
+-- Result: "Alice"
+
+-- Chained subscripts
+SELECT ('{"user": {"name": "Alice"}}'::jsonb)['user']['name'] AS name;
+-- Result: "Alice"
+
+-- Negative indexes (from end)
+SELECT ('[1, 2, 3, 4, 5]'::jsonb)[-1] AS last;
+-- Result: 5
+```
+
+<Note>
+JSONB subscripts are 0-indexed, unlike `list` and `array` types which are 1-indexed.
+</Note>
+
+## Common JSON Patterns
+
+### Filtering by JSON Properties
+
+```sql
+-- Find users with specific attribute
+SELECT * FROM users
+WHERE (metadata->>'role') = 'admin';
+
+-- Check for key existence
+SELECT * FROM products
+WHERE metadata ? 'featured';
+
+-- Contains check
+SELECT * FROM orders
+WHERE items @> '[{"product_id": 123}]'::jsonb;
+```
+
+### Extracting and Transforming JSON Data
+
+```sql
+-- Extract specific fields
+SELECT 
+    id,
+    data->>'name' AS name,
+    (data->>'age')::int AS age,
+    data->'address'->>'city' AS city
+FROM users_json;
+
+-- Build new JSON from existing
+SELECT 
+    id,
+    jsonb_build_object(
+        'name', data->>'name',
+        'email', data->>'email',
+        'is_active', (data->>'age')::int > 18
+    ) AS processed
+FROM users_json;
+```
+
+### Aggregating into JSON
+
+```sql
+-- Group data into JSON structure
+SELECT 
+    department,
+    jsonb_object_agg(employee_id, employee_name) AS employees
+FROM employees
+GROUP BY department;
+
+-- Nested aggregation
+SELECT 
+    category,
+    jsonb_build_object(
+        'count', COUNT(*),
+        'products', jsonb_agg(jsonb_build_object(
+            'id', product_id,
+            'name', product_name,
+            'price', price
+        ))
+    ) AS category_data
+FROM products
+GROUP BY category;
+```
+
+### Working with JSON Arrays
+
+```sql
+-- Expand and filter
+SELECT 
+    order_id,
+    item->>'product_name' AS product,
+    (item->>'quantity')::int AS qty
+FROM orders,
+    jsonb_array_elements(items) AS item
+WHERE (item->>'quantity')::int > 1;
+
+-- Array membership
+SELECT * FROM users
+WHERE tags @> '["premium"]'::jsonb;
+```
+
+### Updating JSON Fields
+
+```sql
+-- Add/update a field
+UPDATE users
+SET metadata = metadata || '{"last_login": "2024-03-15"}'::jsonb
+WHERE user_id = 123;
+
+-- Remove a field
+UPDATE users
+SET metadata = metadata - 'temporary_flag'
+WHERE metadata ? 'temporary_flag';
+
+-- Deep update with path
+UPDATE users
+SET metadata = jsonb_set(
+    metadata, 
+    '{address,city}', 
+    '"New York"'::jsonb
+)
+WHERE user_id = 123;
+```
+
+## Type Casting
+
+### From JSONB
+
+```sql
+-- Extract as text
+SELECT (data->>'age')::int AS age FROM users_json;
+
+-- Cast to numeric types
+SELECT (data->>'price')::numeric AS price FROM products_json;
+
+-- Cast to boolean
+SELECT (data->>'active')::boolean AS is_active FROM users_json;
+```
+
+### To JSONB
+
+```sql
+-- From text
+SELECT '{"key": "value"}'::jsonb AS obj;
+
+-- From other types
+SELECT to_jsonb(123) AS num;
+SELECT to_jsonb('text'::text) AS str;
+SELECT to_jsonb(true) AS bool;
+```
+
+## Performance Considerations
+
+1. **Index JSON fields**: Use GIN indexes for faster JSON queries
+2. **Materialize extracted fields**: Extract frequently-queried JSON fields to regular columns
+3. **Avoid materializing aggregates**: `jsonb_agg` and `jsonb_object_agg` don't update incrementally
+
+```sql
+-- Good: Extract to column for better query performance
+ALTER TABLE users ADD COLUMN user_role text 
+    GENERATED ALWAYS AS (metadata->>'role') STORED;
+
+-- Good: Materialize base data, aggregate in view
+CREATE MATERIALIZED VIEW user_data AS
+SELECT user_id, event_type, event_time FROM events;
+
+CREATE VIEW user_events_json AS
+SELECT user_id, jsonb_agg(event_type) AS events
+FROM user_data
+GROUP BY user_id;
+```
+
+## Related Resources
+
+- [JSONB Type](/sql/types/jsonb)
+- [Aggregate Functions](/sql/functions/aggregates)
+- [CREATE INDEX](/sql/create-index)
+- [JSON Operators Reference](/sql/functions/overview#json-operators)

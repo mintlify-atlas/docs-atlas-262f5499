@@ -1,0 +1,585 @@
+---
+title: 'Client Libraries'
+description: 'Connect to Materialize using PostgreSQL client libraries for various programming languages'
+---
+
+Materialize is **wire-compatible** with PostgreSQL, which means applications can use common PostgreSQL client libraries to connect, query, and stream data from Materialize.
+
+## Supported Languages
+
+Materialize works with PostgreSQL drivers in the following languages:
+
+<CardGroup cols={2}>
+  <Card title="Python" icon="python" href="#python">
+    psycopg2 and psycopg3
+  </Card>
+  <Card title="Node.js" icon="node-js" href="#nodejs">
+    node-postgres (pg)
+  </Card>
+  <Card title="Java" icon="java" href="#java">
+    PostgreSQL JDBC Driver
+  </Card>
+  <Card title="Go" icon="golang" href="#go">
+    pgx driver
+  </Card>
+  <Card title="Ruby" icon="gem" href="#ruby">
+    pg gem
+  </Card>
+  <Card title="Rust" icon="rust" href="#rust">
+    postgres-openssl
+  </Card>
+  <Card title="PHP" icon="php" href="#php">
+    pdo_pgsql
+  </Card>
+</CardGroup>
+
+<Note>
+Client libraries may run introspection queries that use system tables or features not yet implemented in Materialize. While PostgreSQL is supported, not all integrations work out-of-the-box.
+</Note>
+
+## Python
+
+### Installation
+
+```bash
+pip install psycopg2-binary
+# or for psycopg3
+pip install psycopg[binary]
+```
+
+### Connection
+
+```python
+import psycopg2
+
+dsn = "user=user@example.com password=mzp_abc123 host=instance.region.aws.materialize.cloud port=6875 dbname=materialize sslmode=require"
+conn = psycopg2.connect(dsn)
+```
+
+### Query
+
+```python
+with conn.cursor() as cur:
+    cur.execute("SELECT * FROM my_view")
+    for row in cur:
+        print(row)
+```
+
+### Streaming with SUBSCRIBE
+
+```python
+with conn.cursor() as cur:
+    cur.execute("DECLARE c CURSOR FOR SUBSCRIBE my_view")
+    while True:
+        cur.execute("FETCH ALL c")
+        for row in cur:
+            print(row)
+```
+
+### Using psycopg3 Streaming
+
+```python
+import psycopg
+
+conn = psycopg.connect(dsn)
+
+with conn.cursor() as cur:
+    for row in cur.stream("SUBSCRIBE my_view"):
+        print(row)
+```
+
+## Node.js
+
+### Installation
+
+```bash
+npm install pg
+```
+
+### Connection
+
+```javascript
+const { Client } = require('pg');
+
+const client = new Client({
+    user: 'user@example.com',
+    password: 'mzp_abc123',
+    host: 'instance.region.aws.materialize.cloud',
+    port: 6875,
+    database: 'materialize',
+    ssl: true
+});
+
+await client.connect();
+```
+
+### Query
+
+```javascript
+const res = await client.query('SELECT * FROM my_view');
+console.log(res.rows);
+```
+
+### Streaming with SUBSCRIBE
+
+```javascript
+await client.query('BEGIN');
+await client.query('DECLARE c CURSOR FOR SUBSCRIBE my_view');
+
+while (true) {
+    const res = await client.query('FETCH ALL c');
+    console.log(res.rows);
+}
+```
+
+## Java
+
+### Installation (Maven)
+
+```xml
+<dependency>
+    <groupId>org.postgresql</groupId>
+    <artifactId>postgresql</artifactId>
+    <version>42.7.0</version>
+</dependency>
+```
+
+### Connection
+
+```java
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.util.Properties;
+
+public class App {
+    public static void main(String[] args) throws Exception {
+        String url = "jdbc:postgresql://instance.region.aws.materialize.cloud:6875/materialize";
+        
+        Properties props = new Properties();
+        props.setProperty("user", "user@example.com");
+        props.setProperty("password", "mzp_abc123");
+        props.setProperty("ssl", "true");
+        
+        Connection conn = DriverManager.getConnection(url, props);
+    }
+}
+```
+
+### Query
+
+```java
+Statement stmt = conn.createStatement();
+ResultSet rs = stmt.executeQuery("SELECT * FROM my_view");
+
+while (rs.next()) {
+    System.out.println(rs.getString(1));
+}
+```
+
+### Streaming with SUBSCRIBE
+
+```java
+Statement stmt = conn.createStatement();
+stmt.execute("BEGIN");
+stmt.execute("DECLARE c CURSOR FOR SUBSCRIBE my_view");
+
+while (true) {
+    ResultSet rs = stmt.executeQuery("FETCH ALL c");
+    while (rs.next()) {
+        System.out.println(
+            rs.getString("mz_timestamp") + " " + 
+            rs.getString("mz_diff") + " " +
+            rs.getString(3)
+        );
+    }
+}
+```
+
+## Go
+
+### Installation
+
+```bash
+go get github.com/jackc/pgx/v5
+```
+
+### Connection
+
+```go
+import (
+    "context"
+    "github.com/jackc/pgx/v5"
+)
+
+ctx := context.Background()
+connStr := "postgres://user@example.com:mzp_abc123@instance.region.aws.materialize.cloud:6875/materialize?sslmode=require"
+
+conn, err := pgx.Connect(ctx, connStr)
+if err != nil {
+    log.Fatal(err)
+}
+defer conn.Close(ctx)
+```
+
+### Query
+
+```go
+rows, err := conn.Query(ctx, "SELECT * FROM my_view")
+if err != nil {
+    log.Fatal(err)
+}
+defer rows.Close()
+
+for rows.Next() {
+    var col1 string
+    var col2 int
+    err = rows.Scan(&col1, &col2)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("%s: %d\n", col1, col2)
+}
+```
+
+### Streaming with SUBSCRIBE
+
+```go
+tx, err := conn.Begin(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+defer tx.Rollback(ctx)
+
+_, err = tx.Exec(ctx, "DECLARE c CURSOR FOR SUBSCRIBE my_view")
+if err != nil {
+    log.Fatal(err)
+}
+
+for {
+    rows, err := tx.Query(ctx, "FETCH ALL c")
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    for rows.Next() {
+        var timestamp, diff string
+        var value interface{}
+        rows.Scan(&timestamp, &diff, &value)
+        fmt.Printf("%s %s %v\n", timestamp, diff, value)
+    }
+    rows.Close()
+}
+```
+
+## Ruby
+
+### Installation
+
+```bash
+gem install pg
+```
+
+### Connection
+
+```ruby
+require 'pg'
+
+conn = PG.connect(
+  host: 'instance.region.aws.materialize.cloud',
+  port: 6875,
+  user: 'user@example.com',
+  password: 'mzp_abc123',
+  dbname: 'materialize',
+  sslmode: 'require'
+)
+```
+
+### Query
+
+```ruby
+res = conn.exec('SELECT * FROM my_view')
+
+res.each do |row|
+  puts row
+end
+```
+
+### Streaming with SUBSCRIBE
+
+```ruby
+conn.exec('BEGIN')
+conn.exec('DECLARE c CURSOR FOR SUBSCRIBE my_view')
+
+loop do
+  conn.exec('FETCH ALL c') do |result|
+    result.each do |row|
+      puts row
+    end
+  end
+end
+```
+
+## Rust
+
+### Installation (Cargo.toml)
+
+```toml
+[dependencies]
+postgres = "0.19"
+postgres-openssl = "0.5"
+openssl = "0.10"
+```
+
+### Connection
+
+```rust
+use postgres::{Client, NoTls};
+use openssl::ssl::{SslConnector, SslMethod};
+use postgres_openssl::MakeTlsConnector;
+
+let builder = SslConnector::builder(SslMethod::tls()).unwrap();
+let connector = MakeTlsConnector::new(builder.build());
+
+let mut client = Client::connect(
+    "host=instance.region.aws.materialize.cloud port=6875 user=user@example.com password=mzp_abc123 dbname=materialize sslmode=require",
+    connector,
+)?;
+```
+
+### Query
+
+```rust
+for row in client.query("SELECT * FROM my_view", &[])? {
+    let id: i32 = row.get(0);
+    let name: String = row.get(1);
+    println!("{}: {}", id, name);
+}
+```
+
+## PHP
+
+### Installation
+
+Ensure the PostgreSQL PDO extension is enabled:
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install php-pgsql
+
+# macOS with Homebrew
+brew install php
+```
+
+### Connection
+
+```php
+<?php
+$dsn = "pgsql:host=instance.region.aws.materialize.cloud;port=6875;dbname=materialize;sslmode=require";
+$user = "user@example.com";
+$password = "mzp_abc123";
+
+try {
+    $pdo = new PDO($dsn, $user, $password);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+} catch (PDOException $e) {
+    echo "Connection failed: " . $e->getMessage();
+}
+?>
+```
+
+### Query
+
+```php
+$stmt = $pdo->query("SELECT * FROM my_view");
+while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+    print_r($row);
+}
+```
+
+## Common Patterns
+
+### Creating Tables
+
+```sql
+CREATE TABLE countries (
+    code CHAR(2),
+    name TEXT
+);
+```
+
+### Inserting Data
+
+```sql
+INSERT INTO countries (code, name) VALUES ('US', 'United States');
+```
+
+### Creating Materialized Views
+
+```sql
+CREATE MATERIALIZED VIEW active_users AS
+SELECT user_id, COUNT(*) as event_count
+FROM events
+GROUP BY user_id;
+```
+
+### SUBSCRIBE Output Format
+
+When using `SUBSCRIBE`, the result set includes these columns:
+
+- `mz_timestamp` - Milliseconds since epoch when the change occurred
+- `mz_diff` - `1` for insertions, `-1` for deletions
+- Additional columns from your view
+
+An **update** appears as two rows: one deletion (`-1`) and one insertion (`1`) with the same timestamp.
+
+```
+mz_timestamp    | mz_diff | user_id | event_count
+----------------|---------|---------|-------------
+1648567756801   | 1       | 123     | 5
+1648567761801   | 1       | 456     | 3
+1648567785802   | -1      | 123     | 5
+1648567785802   | 1       | 123     | 6
+```
+
+## Connection Parameters
+
+### Standard Parameters
+
+| Parameter | Value | Required |
+|-----------|-------|----------|
+| Host | Your Materialize hostname | Yes |
+| Port | `6875` | Yes |
+| Database | `materialize` | Yes |
+| User | Your user email | Yes |
+| Password | App password (starts with `mzp_`) | Yes |
+| SSL Mode | `require` | Yes |
+
+### Advanced Parameters
+
+You can pass additional parameters via the connection string:
+
+```
+postgresql://user@host:6875/materialize?sslmode=require&options=--cluster%3Dprod
+```
+
+Or via environment variable:
+
+```bash
+export PGOPTIONS='--cluster=prod'
+```
+
+## ORMs and Frameworks
+
+<Warning>
+ORM frameworks (like SQLAlchemy, Hibernate, ActiveRecord, Sequelize, GORM, etc.) tend to run complex introspection queries that may not work with Materialize.
+
+While support is improving as we extend `pg_catalog` coverage, ORMs may not work out-of-the-box.
+</Warning>
+
+### Known Limitations
+
+- Some ORMs use PostgreSQL-specific system functions not yet in Materialize
+- Schema introspection may fail or return incomplete results
+- Migrations may need manual adjustment
+- Some ORM features (like automatic schema generation) may not work
+
+### Workarounds
+
+1. Use raw SQL queries instead of ORM query builders
+2. Disable automatic schema introspection
+3. Manually define schemas/models
+4. Use the underlying driver directly
+
+## Troubleshooting
+
+### SSL/TLS Errors
+
+Ensure SSL is enabled and required:
+
+```
+sslmode=require
+```
+
+### Authentication Failures
+
+- Verify you're using an **app password** (starts with `mzp_`)
+- Check that username is your full email address
+- Ensure no extra spaces in credentials
+
+### Connection Timeouts
+
+- Check firewall rules allow outbound port 6875
+- Verify the hostname is correct
+- Test connectivity with `psql` first
+
+### Feature Not Supported Errors
+
+Some PostgreSQL features aren't yet in Materialize:
+
+- Check the [SQL compatibility docs](/sql/compatibility)
+- Use alternative approaches when possible
+- Submit [feature requests](https://github.com/MaterializeInc/materialize/discussions/new?category=feature-requests)
+
+## Best Practices
+
+### 1. Use Connection Pooling
+
+For production applications, use connection pooling:
+
+- **Python**: `psycopg2.pool` or `SQLAlchemy`
+- **Node.js**: `pg.Pool`
+- **Java**: HikariCP or c3p0
+- **Go**: `pgxpool`
+
+### 2. Handle SUBSCRIBE Properly
+
+- Use long-lived transactions for `SUBSCRIBE`
+- Implement reconnection logic
+- Handle `mz_diff` correctly (1 = insert, -1 = delete)
+
+### 3. Parameterized Queries
+
+Always use parameterized queries to prevent SQL injection:
+
+```python
+# Good
+cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+
+# Bad
+cur.execute(f"SELECT * FROM users WHERE id = {user_id}")
+```
+
+### 4. Connection Management
+
+- Close connections when done
+- Use context managers (Python `with` statement)
+- Handle connection errors gracefully
+
+### 5. Cluster Selection
+
+Specify the cluster for workload isolation:
+
+```
+options=--cluster%3Dproduction
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="SQL Reference" icon="book" href="/sql">
+    Learn about Materialize SQL syntax
+  </Card>
+  <Card title="SUBSCRIBE" icon="rss" href="/sql/subscribe">
+    Stream real-time updates from views
+  </Card>
+  <Card title="Connection Pooling" icon="layer-group">
+    Optimize connections for production
+  </Card>
+  <Card title="BI Tools" icon="chart-line" href="/integrations/bi-tools">
+    Connect visualization tools
+  </Card>
+</CardGroup>
+
+## Request New Libraries
+
+Need support for another client library? [Submit a feature request](https://github.com/MaterializeInc/materialize/discussions/new?category=feature-requests&labels=A-integration) on GitHub.

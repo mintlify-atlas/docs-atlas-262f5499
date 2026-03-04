@@ -1,0 +1,304 @@
+---
+title: Aggregate Functions
+description: SQL aggregate functions for computing results across multiple rows
+---
+
+Aggregate functions compute a single result from a set of input values. They are commonly used with `GROUP BY` clauses to perform calculations on groups of rows.
+
+## Standard Aggregate Functions
+
+### COUNT
+
+Count the number of rows or non-null values.
+
+| Signature | Return Type | Description |
+|-----------|-------------|-------------|
+| `COUNT(*)` | `bigint` | Count all rows including nulls |
+| `COUNT(expr)` | `bigint` | Count non-null values |
+| `COUNT(DISTINCT expr)` | `bigint` | Count distinct non-null values |
+
+**Example:**
+```sql
+SELECT COUNT(*) FROM orders;
+SELECT COUNT(DISTINCT customer_id) FROM orders;
+```
+
+### SUM
+
+Calculate the sum of numeric values.
+
+| Signature | Return Type | Description |
+|-----------|-------------|-------------|
+| `SUM(expr)` | Same as input | Sum of all non-null values |
+| `SUM(DISTINCT expr)` | Same as input | Sum of distinct non-null values |
+
+**Example:**
+```sql
+SELECT SUM(amount) FROM transactions;
+SELECT customer_id, SUM(order_total) 
+FROM orders 
+GROUP BY customer_id;
+```
+
+### AVG
+
+Calculate the average (mean) of numeric values.
+
+| Signature | Return Type | Description |
+|-----------|-------------|-------------|
+| `AVG(expr)` | `numeric` or `double` | Average of non-null values |
+| `AVG(DISTINCT expr)` | `numeric` or `double` | Average of distinct non-null values |
+
+**Example:**
+```sql
+SELECT AVG(price) FROM products;
+SELECT category, AVG(rating) 
+FROM products 
+GROUP BY category;
+```
+
+### MIN and MAX
+
+Find the minimum or maximum value.
+
+| Signature | Return Type | Description |
+|-----------|-------------|-------------|
+| `MIN(expr)` | Same as input | Minimum value |
+| `MAX(expr)` | Same as input | Maximum value |
+
+**Example:**
+```sql
+SELECT MIN(created_at), MAX(created_at) FROM events;
+SELECT product_id, MIN(price), MAX(price) 
+FROM price_history 
+GROUP BY product_id;
+```
+
+### STDDEV and VARIANCE
+
+Calculate statistical measures of spread.
+
+| Function | Return Type | Description |
+|----------|-------------|-------------|
+| `STDDEV(expr)` | `numeric` | Sample standard deviation |
+| `STDDEV_POP(expr)` | `numeric` | Population standard deviation |
+| `STDDEV_SAMP(expr)` | `numeric` | Sample standard deviation (same as STDDEV) |
+| `VARIANCE(expr)` | `numeric` | Sample variance |
+| `VAR_POP(expr)` | `numeric` | Population variance |
+| `VAR_SAMP(expr)` | `numeric` | Sample variance (same as VARIANCE) |
+
+**Example:**
+```sql
+SELECT STDDEV(response_time) FROM requests;
+SELECT service, STDDEV(latency), VARIANCE(latency)
+FROM metrics
+GROUP BY service;
+```
+
+## Specialized Aggregate Functions
+
+### array_agg
+
+Aggregate values (including nulls) into an array.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `value` | any | The values to aggregate |
+
+**Return Type:** `array`
+
+**Example:**
+```sql
+SELECT 
+    title,
+    ARRAY_AGG(
+        first_name || ' ' || last_name
+        ORDER BY last_name
+    ) AS actors
+FROM film
+GROUP BY title;
+```
+
+**Usage Note:** Materializing `array_agg` is an incremental view maintenance anti-pattern. Any change requires complete recomputation. Instead:
+
+```sql
+CREATE MATERIALIZED VIEW foo_view AS SELECT * FROM foo;
+CREATE VIEW bar AS SELECT array_agg(foo_view.bar) FROM foo_view;
+```
+
+### string_agg
+
+Concatenate non-null input values into a string with a delimiter.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `value` | `text` | The values to concatenate |
+| `delimiter` | `text` | The separator between values |
+
+**Return Type:** `text`
+
+**Example:**
+```sql
+SELECT string_agg(name, ', ' ORDER BY name) AS team_members
+FROM employees
+WHERE department = 'Engineering';
+```
+
+**Usage Note:** Like `array_agg`, materializing `string_agg` is an anti-pattern:
+
+```sql
+CREATE MATERIALIZED VIEW foo_view AS SELECT * FROM foo;
+CREATE VIEW bar AS SELECT string_agg(foo_view.bar, ',') FROM foo_view;
+```
+
+### list_agg
+
+Aggregate values into a list.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `value` | any | The values to aggregate |
+
+**Return Type:** `list`
+
+**Example:**
+```sql
+SELECT list_agg(tag ORDER BY tag) AS tags
+FROM article_tags
+WHERE article_id = 123;
+```
+
+### jsonb_agg
+
+Aggregate values (including nulls) as a JSONB array.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `expression` | any | The values to aggregate |
+
+**Return Type:** `jsonb`
+
+**Example:**
+```sql
+SELECT
+  jsonb_agg(t ORDER BY t.id) FILTER (WHERE t.content LIKE 'h%') AS my_agg
+FROM (
+  VALUES
+  (1, 'hey'),
+  (2, NULL),
+  (3, 'hi'),
+  (4, 'salutations')
+) AS t(id, content);
+```
+
+**Result:**
+```json
+[{"content":"hey","id":1},{"content":"hi","id":3}]
+```
+
+### jsonb_object_agg
+
+Aggregate key-value pairs into a JSONB object.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `keys` | any | The keys to aggregate |
+| `values` | any | The values to aggregate |
+
+**Return Type:** `jsonb`
+
+**Example:**
+```sql
+SELECT
+  jsonb_object_agg(
+    t.col1,
+    t.col2
+    ORDER BY t.ts ASC
+  ) FILTER (WHERE t.col2 IS NOT NULL) AS my_agg
+FROM (
+  VALUES
+  ('k1', 1, now()),
+  ('k2', 2, now() - INTERVAL '1s'),
+  ('k2', -1, now())
+) AS t(col1, col2, ts);
+```
+
+**Result:**
+```json
+{"k1": 1, "k2": -1}
+```
+
+### map_agg
+
+Aggregate key-value pairs into a map.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `keys` | any | The keys to aggregate |
+| `values` | any | The values to aggregate |
+
+**Return Type:** `map`
+
+## Filtering Aggregates
+
+You can filter the input rows to an aggregate function using the `FILTER` clause:
+
+```sql
+SELECT
+    COUNT(*) AS total_orders,
+    COUNT(*) FILTER (WHERE status = 'completed') AS completed_orders,
+    SUM(amount) FILTER (WHERE status = 'completed') AS completed_revenue
+FROM orders;
+```
+
+## Ordering in Aggregates
+
+Some aggregate functions support `ORDER BY` within the function call:
+
+```sql
+SELECT 
+    customer_id,
+    string_agg(product_name, ', ' ORDER BY order_date DESC) AS recent_products
+FROM purchases
+GROUP BY customer_id;
+```
+
+<Note>
+Without an explicit `ORDER BY` clause inside the aggregate function, rows are processed in an arbitrary order.
+</Note>
+
+## Incremental View Maintenance Considerations
+
+Some aggregate functions work well with incremental updates:
+
+**Efficient for materialization:**
+- `COUNT`, `SUM`, `MIN`, `MAX`
+- Simple aggregates that can be updated incrementally
+
+**Anti-patterns for materialization:**
+- `array_agg`, `string_agg`, `list_agg`, `jsonb_agg`, `jsonb_object_agg`
+- These require complete recomputation on any change
+
+**Best Practice:** Materialize the base data, then create non-materialized views with expensive aggregates:
+
+```sql
+-- Materialize the filtered, prepared data
+CREATE MATERIALIZED VIEW prepared_data AS
+SELECT customer_id, product_name, order_date
+FROM orders
+WHERE status = 'completed';
+
+-- Non-materialized view with expensive aggregate
+CREATE VIEW customer_products AS
+SELECT 
+    customer_id,
+    array_agg(product_name ORDER BY order_date) AS products
+FROM prepared_data
+GROUP BY customer_id;
+```
+
+## Related Resources
+
+- [Aggregate Filter Expressions](/sql/functions/filters)
+- [GROUP BY Clause](/sql/select#group-by)
+- [CREATE MATERIALIZED VIEW](/sql/create-materialized-view)

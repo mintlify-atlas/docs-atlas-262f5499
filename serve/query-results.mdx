@@ -1,0 +1,318 @@
+---
+title: Query Results
+description: Query Materialize using SELECT statements with PostgreSQL-compatible clients
+---
+
+You can query results from Materialize using `SELECT` SQL statements. Because Materialize uses the PostgreSQL wire protocol, it works out-of-the-box with a wide range of SQL clients and tools that support PostgreSQL.
+
+## Overview
+
+Materialize is wire-compatible with PostgreSQL, enabling you to query data using any PostgreSQL client library. When you query indexed views or materialized views, Materialize returns results instantly from memory.
+
+## SELECT Queries
+
+Query data in Materialize using the standard `SELECT` statement:
+
+```sql
+SELECT region.id, sum(purchase.total)
+FROM mysql_simple_purchase AS purchase
+JOIN mysql_simple_user AS user ON purchase.user_id = user.id
+JOIN mysql_simple_region AS region ON user.region_id = region.id
+GROUP BY region.id;
+```
+
+### Performance Characteristics
+
+**Optimal queries:**
+- Queries against indexed views or materialized views return maintained results from memory
+- Queries that only filter, project, transform with scalar functions, and re-order indexed data
+
+**Ad-hoc queries:**
+- Queries that can't read directly from an index create ephemeral dataflows
+- These dataflows are bound to the active cluster
+- Materialize removes the dataflow as soon as it returns results
+
+### Cluster Selection
+
+Control which cluster executes your queries:
+
+```sql
+SET cluster = my_query_cluster;
+```
+
+Ephemeral dataflows for ad-hoc queries use the currently active cluster.
+
+## Connection Examples
+
+### Python (psycopg2)
+
+Connect and query using the psycopg2 adapter:
+
+```python
+import psycopg2
+
+dsn = "user=MATERIALIZE_USERNAME password=MATERIALIZE_PASSWORD host=MATERIALIZE_HOST port=6875 dbname=materialize sslmode=require"
+conn = psycopg2.connect(dsn)
+
+with conn.cursor() as cur:
+    cur.execute("SELECT * FROM my_view;")
+    for row in cur:
+        print(row)
+```
+
+### Python (psycopg3)
+
+Psycopg3 provides similar functionality with a cleaner API:
+
+```python
+import psycopg
+
+dsn = "user=MATERIALIZE_USERNAME password=MATERIALIZE_PASSWORD host=MATERIALIZE_HOST port=6875 dbname=materialize sslmode=require"
+conn = psycopg.connect(dsn)
+
+with conn.cursor() as cur:
+    cur.execute("SELECT * FROM my_view")
+    results = cur.fetchall()
+    print(results)
+```
+
+### Node.js
+
+Connect and query using node-postgres:
+
+```javascript
+const { Client } = require('pg');
+
+const client = new Client({
+    user: MATERIALIZE_USERNAME,
+    password: MATERIALIZE_PASSWORD,
+    host: MATERIALIZE_HOST,
+    port: 6875,
+    database: 'materialize',
+    ssl: true
+});
+
+async function main() {
+    await client.connect();
+    const res = await client.query('SELECT * FROM my_view');
+    console.log(res.rows);
+}
+
+main();
+```
+
+### Java (JDBC)
+
+Connect and query using the PostgreSQL JDBC driver:
+
+```java
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.util.Properties;
+
+public class App {
+    private final String url = "jdbc:postgresql://MATERIALIZE_HOST:6875/materialize";
+    private final String user = "MATERIALIZE_USERNAME";
+    private final String password = "MATERIALIZE_PASSWORD";
+
+    public Connection connect() throws SQLException {
+        Properties props = new Properties();
+        props.setProperty("user", user);
+        props.setProperty("password", password);
+        props.setProperty("ssl", "true");
+        return DriverManager.getConnection(url, props);
+    }
+
+    public void query() {
+        String SQL = "SELECT * FROM my_view";
+        try (Connection conn = connect();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(SQL)) {
+            while (rs.next()) {
+                System.out.println(rs.getString("column_name"));
+            }
+        } catch (SQLException ex) {
+            System.out.println(ex.getMessage());
+        }
+    }
+}
+```
+
+### psql
+
+Connect using the PostgreSQL command-line client:
+
+```bash
+psql -h MATERIALIZE_HOST -p 6875 -U MATERIALIZE_USERNAME materialize
+```
+
+Then run queries:
+
+```sql
+SELECT * FROM my_view;
+```
+
+## Query Patterns
+
+### Point-in-Time Queries
+
+Query the current state of a view:
+
+```sql
+SELECT * FROM sales_by_region;
+```
+
+### Filtered Queries
+
+Apply filters to indexed data:
+
+```sql
+SELECT * FROM sales_by_region
+WHERE region = 'US-EAST'
+AND total > 10000;
+```
+
+### Aggregations
+
+Query pre-computed aggregations:
+
+```sql
+SELECT 
+    region,
+    SUM(total) as revenue,
+    COUNT(*) as orders
+FROM orders_by_region
+GROUP BY region;
+```
+
+## Polling Queries
+
+Because Materialize maintains incrementally updated views, you can safely poll views without impacting performance:
+
+```python
+import time
+import psycopg2
+
+conn = psycopg2.connect(dsn)
+
+while True:
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM real_time_metrics")
+        results = cur.fetchall()
+        print(results)
+    time.sleep(1)  # Poll every second
+```
+
+**Note:** For real-time streaming updates, consider using [`SUBSCRIBE`](/serve/subscribe) instead of polling.
+
+## Performance Tips
+
+### Use Indexes
+
+Create indexes on materialized views for optimal query performance:
+
+```sql
+CREATE INDEX idx_region ON sales_by_region (region);
+```
+
+### Materialize Views
+
+For frequently queried results, create materialized views:
+
+```sql
+CREATE MATERIALIZED VIEW sales_summary AS
+SELECT 
+    region,
+    date_trunc('day', order_date) as day,
+    SUM(total) as revenue
+FROM orders
+GROUP BY region, day;
+```
+
+### Dedicated Clusters
+
+Use dedicated clusters for query workloads:
+
+```sql
+CREATE CLUSTER query_cluster SIZE = 'large';
+SET cluster = query_cluster;
+```
+
+## Connection Pooling
+
+Materialize is compatible with PostgreSQL connection poolers like PgBouncer:
+
+```ini
+[databases]
+materialize = host=MATERIALIZE_HOST port=6875 dbname=materialize
+
+[pgbouncer]
+listen_port = 6432
+listen_addr = *
+auth_type = md5
+auth_file = /etc/pgbouncer/userlist.txt
+pool_mode = transaction
+max_client_conn = 1000
+default_pool_size = 20
+```
+
+See [Connection Pooling](/integrations/connection-pooling) for more details.
+
+## Error Handling
+
+### Connection Errors
+
+Handle connection failures gracefully:
+
+```python
+import psycopg2
+from psycopg2 import OperationalError
+
+try:
+    conn = psycopg2.connect(dsn)
+except OperationalError as e:
+    print(f"Connection failed: {e}")
+```
+
+### Query Errors
+
+Handle query errors:
+
+```python
+try:
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM non_existent_view")
+except psycopg2.errors.UndefinedTable as e:
+    print(f"Table not found: {e}")
+```
+
+## Client Library Guides
+
+For language-specific guides and examples:
+
+- [Python](/integrations/client-libraries/python)
+- [Node.js](/integrations/client-libraries/node-js)
+- [Java](/integrations/client-libraries/java-jdbc)
+- [Go](/integrations/client-libraries/golang)
+- [Ruby](/integrations/client-libraries/ruby)
+- [Rust](/integrations/client-libraries/rust)
+- [PHP](/integrations/client-libraries/php)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Subscribe" icon="stream" href="/serve/subscribe">
+    Stream real-time updates with SUBSCRIBE
+  </Card>
+  <Card title="SQL Reference" icon="book" href="/sql/select">
+    Complete SELECT statement reference
+  </Card>
+  <Card title="Materialized Views" icon="eye" href="/sql/create-materialized-view">
+    Create materialized views
+  </Card>
+  <Card title="Indexes" icon="magnifying-glass" href="/sql/create-index">
+    Create indexes for faster queries
+  </Card>
+</CardGroup>

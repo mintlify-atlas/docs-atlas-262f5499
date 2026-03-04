@@ -1,0 +1,605 @@
+---
+title: "Docker Deployment"
+description: "Run Materialize locally using Docker and Docker Compose for development and testing."
+---
+
+## Overview
+
+This guide shows how to run Materialize using Docker and Docker Compose. This deployment method is suitable for:
+
+- Local development and testing
+- Proof-of-concept deployments
+- Learning and experimentation
+
+<Warning>
+Docker deployments are **not recommended for production use**. For production deployments, use [Kubernetes](/deployment/self-managed/kubernetes) or [Materialize Cloud](/deployment/cloud/overview).
+</Warning>
+
+## Prerequisites
+
+- Docker 20.10 or later
+- Docker Compose 2.0 or later (or Docker Desktop with Compose plugin)
+- At least 4 GB of available RAM
+- 10 GB of available disk space
+
+### Install Docker
+
+<Tabs>
+  <Tab title="macOS">
+    ```bash
+    # Install Docker Desktop or OrbStack
+    brew install --cask orbstack
+    # or
+    brew install --cask docker
+    ```
+  </Tab>
+  <Tab title="Linux (Debian/Ubuntu)">
+    ```bash
+    # Install Docker and Docker Compose plugin
+    sudo apt update
+    sudo apt install docker.io docker-compose-plugin
+    
+    # Add your user to docker group
+    sudo usermod -aG docker $USER
+    newgrp docker
+    ```
+  </Tab>
+  <Tab title="Windows">
+    Download and install [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/)
+  </Tab>
+</Tabs>
+
+Verify installation:
+
+```bash
+docker --version
+docker compose version
+```
+
+## Quick Start
+
+### Minimal Setup
+
+Create a `docker-compose.yml` file:
+
+```yaml
+version: '3.9'
+
+services:
+  # Metadata store (CockroachDB)
+  cockroach:
+    image: cockroachdb/cockroach:v23.1.11
+    command: start-single-node --insecure
+    ports:
+      - "26257:26257"
+      - "8080:8080"
+    volumes:
+      - cockroach-data:/cockroach/cockroach-data
+    networks:
+      - materialize-network
+
+  # Object storage (MinIO)
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - materialize-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Create MinIO bucket
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 minio minio123;
+      mc mb myminio/materialize-persist || true;
+      exit 0;
+      "
+    networks:
+      - materialize-network
+
+  # Materialize
+  materialized:
+    image: materialize/materialized:v0.147.0
+    command: --metadata-backend-url=postgres://root@cockroach:26257/materialize?options=--search_path=adapter --persist-backend-url=s3://minio:minio123@materialize-persist/12345678-1234-1234-1234-123456789012?endpoint=http://minio:9000&region=minio
+    ports:
+      - "6875:6875"  # SQL
+      - "6876:6876"  # HTTP
+    depends_on:
+      - cockroach
+      - minio-init
+    environment:
+      MZ_SOFT_ASSERTIONS: "1"
+      MZ_ENVIRONMENT_ID: "12345678-1234-1234-1234-123456789012"
+    networks:
+      - materialize-network
+
+volumes:
+  cockroach-data:
+  minio-data:
+
+networks:
+  materialize-network:
+    driver: bridge
+```
+
+### Start Materialize
+
+```bash
+# Start all services
+docker compose up -d
+
+# Check status
+docker compose ps
+
+# View logs
+docker compose logs -f materialized
+```
+
+Expected output:
+```
+NAME                STATUS              PORTS
+cockroach           running             0.0.0.0:26257->26257/tcp, 0.0.0.0:8080->8080/tcp
+minio               running (healthy)   0.0.0.0:9000-9001->9000-9001/tcp
+materialized        running             0.0.0.0:6875-6876->6875-6876/tcp
+```
+
+### Connect to Materialize
+
+```bash
+# Using psql
+psql "postgres://materialize@localhost:6875/materialize"
+
+# Using Docker
+docker run -it --rm --network host postgres:15 \
+  psql "postgres://materialize@localhost:6875/materialize"
+```
+
+## Complete Development Setup
+
+For a more complete development environment with test data sources:
+
+```yaml
+version: '3.9'
+
+services:
+  # === Infrastructure ===
+  
+  cockroach:
+    image: cockroachdb/cockroach:v23.1.11
+    command: start-single-node --insecure
+    ports:
+      - "26257:26257"
+    volumes:
+      - cockroach-data:/cockroach/cockroach-data
+    networks:
+      - materialize-network
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - materialize-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 minio minio123;
+      mc mb myminio/materialize-persist || true;
+      exit 0;
+      "
+    networks:
+      - materialize-network
+
+  # === Data Sources ===
+  
+  # PostgreSQL source database
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: testdb
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - materialize-network
+
+  # Redpanda (Kafka-compatible)
+  redpanda:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp
+      - '1'
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - '0'
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+    ports:
+      - "19092:19092"
+      - "9644:9644"  # Admin API
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    networks:
+      - materialize-network
+
+  # === Materialize ===
+  
+  materialized:
+    image: materialize/materialized:v0.147.0
+    command: >
+      --metadata-backend-url=postgres://root@cockroach:26257/materialize?options=--search_path=adapter
+      --persist-backend-url=s3://minio:minio123@materialize-persist/12345678-1234-1234-1234-123456789012?endpoint=http://minio:9000&region=minio
+      --orchestrator=process
+      --orchestrator-process-tcp-proxy-listen-addr=0.0.0.0:6877
+      --orchestrator-process-prometheus-service-discovery-directory=/mzdata/prometheus
+    ports:
+      - "6875:6875"  # SQL
+      - "6876:6876"  # HTTP
+      - "6877:6877"  # Internal
+    depends_on:
+      - cockroach
+      - minio-init
+    environment:
+      MZ_SOFT_ASSERTIONS: "1"
+      MZ_ENVIRONMENT_ID: "12345678-1234-1234-1234-123456789012"
+      # Optional: Disable fsync for faster local development
+      # LD_PRELOAD: libeatmydata.so
+    volumes:
+      - mz-data:/mzdata
+    networks:
+      - materialize-network
+
+volumes:
+  cockroach-data:
+  minio-data:
+  postgres-data:
+  redpanda-data:
+  mz-data:
+
+networks:
+  materialize-network:
+    driver: bridge
+```
+
+Start the complete stack:
+
+```bash
+docker compose up -d
+
+# Wait for all services to be healthy
+docker compose ps
+
+# View logs
+docker compose logs -f
+```
+
+## Usage Examples
+
+### Connect to PostgreSQL CDC
+
+```sql
+-- Connect to Materialize
+psql "postgres://materialize@localhost:6875/materialize"
+
+-- Create connection to PostgreSQL
+CREATE SECRET pgpass AS 'postgres';
+
+CREATE CONNECTION pg_connection TO POSTGRES (
+  HOST 'postgres',
+  PORT 5432,
+  DATABASE 'testdb',
+  USER 'postgres',
+  PASSWORD SECRET pgpass
+);
+
+-- Create source from PostgreSQL
+CREATE SOURCE pg_source
+FROM POSTGRES CONNECTION pg_connection
+(PUBLICATION 'mz_source')
+FOR ALL TABLES;
+```
+
+### Connect to Redpanda (Kafka)
+
+```sql
+-- Create connection to Redpanda
+CREATE CONNECTION redpanda_connection TO KAFKA (
+  BROKER 'redpanda:9092',
+  SECURITY PROTOCOL = 'PLAINTEXT'
+);
+
+-- Create source from Kafka topic
+CREATE SOURCE events
+FROM KAFKA CONNECTION redpanda_connection (TOPIC 'events')
+FORMAT JSON;
+
+-- Create materialized view
+CREATE MATERIALIZED VIEW event_counts AS
+SELECT
+  (data->>'event_type')::text AS event_type,
+  COUNT(*) as count
+FROM events
+GROUP BY event_type;
+```
+
+### Load Data from S3 (MinIO)
+
+```sql
+-- Create connection to MinIO
+CREATE CONNECTION minio_connection TO AWS (
+  ENDPOINT 'http://minio:9000',
+  REGION 'minio',
+  ACCESS KEY ID = 'minio',
+  SECRET ACCESS KEY = 'minio123'
+);
+
+-- Create source from S3
+CREATE SOURCE csv_data
+FROM S3 DISCOVER OBJECTS MATCHING 'data/*.csv' USING
+  BUCKET SCAN 'my-bucket'
+  WITH (AWS CONNECTION = minio_connection)
+FORMAT CSV WITH HEADER;
+```
+
+## Configuration Options
+
+### Environment Variables
+
+Common environment variables for `materialized`:
+
+```yaml
+environment:
+  # Environment identifier
+  MZ_ENVIRONMENT_ID: "12345678-1234-1234-1234-123456789012"
+  
+  # Enable soft assertions for debugging
+  MZ_SOFT_ASSERTIONS: "1"
+  
+  # Logging configuration
+  MZ_LOG_FILTER: "info,mz=debug"
+  
+  # Telemetry (disable for local dev)
+  MZ_TELEMETRY: "false"
+  
+  # Development mode (unsafe for production)
+  UNSAFE_MODE: "true"
+```
+
+### Command-Line Arguments
+
+Key command-line options for `materialized`:
+
+```bash
+--metadata-backend-url=<URL>        # PostgreSQL metadata store
+--persist-backend-url=<URL>         # S3 persistence backend
+--orchestrator=process              # Use process orchestrator
+--listen-addr=0.0.0.0:6875          # SQL listen address
+--http-listen-addr=0.0.0.0:6876     # HTTP listen address
+--internal-http-listen-addr=...     # Internal HTTP address
+--workers=<N>                       # Number of worker threads
+```
+
+### Resource Limits
+
+Limit resources in Docker Compose:
+
+```yaml
+materialized:
+  image: materialize/materialized:v0.147.0
+  deploy:
+    resources:
+      limits:
+        cpus: '4'
+        memory: 8G
+      reservations:
+        cpus: '2'
+        memory: 4G
+```
+
+## Data Persistence
+
+Docker volumes persist data across container restarts:
+
+```bash
+# List volumes
+docker volume ls
+
+# Inspect a volume
+docker volume inspect <volume-name>
+
+# Backup a volume
+docker run --rm -v <volume-name>:/data -v $(pwd):/backup \
+  ubuntu tar czf /backup/backup.tar.gz -C /data .
+
+# Restore a volume
+docker run --rm -v <volume-name>:/data -v $(pwd):/backup \
+  ubuntu tar xzf /backup/backup.tar.gz -C /data
+```
+
+### Clean Up Data
+
+```bash
+# Stop and remove containers
+docker compose down
+
+# Remove containers and volumes (deletes all data)
+docker compose down -v
+
+# Remove specific volume
+docker volume rm <volume-name>
+```
+
+## Monitoring
+
+### Access Web Interfaces
+
+- **MinIO Console**: http://localhost:9001 (minio / minio123)
+- **CockroachDB Console**: http://localhost:8080
+- **Redpanda Console**: Install separately or use CLI
+
+### View Metrics
+
+Materialize exposes metrics on the HTTP port:
+
+```bash
+# Prometheus metrics
+curl http://localhost:6876/metrics
+
+# Health check
+curl http://localhost:6876/api/livez
+curl http://localhost:6876/api/readyz
+```
+
+### Container Logs
+
+```bash
+# View all logs
+docker compose logs
+
+# Follow logs for specific service
+docker compose logs -f materialized
+
+# Last 100 lines
+docker compose logs --tail=100 materialized
+```
+
+## Troubleshooting
+
+### Container Won't Start
+
+Check logs and fix common issues:
+
+```bash
+# Check container status
+docker compose ps
+
+# View logs
+docker compose logs materialized
+
+# Common issues:
+# 1. Port already in use
+sudo lsof -i :6875
+
+# 2. Insufficient memory
+docker system df
+docker system prune
+
+# 3. Backend connection issues
+docker compose exec materialized ping cockroach
+docker compose exec materialized ping minio
+```
+
+### Connection Refused
+
+Ensure services are running and accessible:
+
+```bash
+# Check if materialized is listening
+docker compose exec materialized netstat -tlnp | grep 6875
+
+# Test connection from host
+telnet localhost 6875
+
+# Test from another container
+docker compose exec postgres psql "postgres://materialize@materialized:6875/materialize"
+```
+
+### Performance Issues
+
+Increase resources:
+
+```yaml
+materialized:
+  deploy:
+    resources:
+      limits:
+        cpus: '8'
+        memory: 16G
+```
+
+Or disable fsync for development:
+
+```yaml
+materialized:
+  environment:
+    LD_PRELOAD: libeatmydata.so
+```
+
+<Warning>
+Disabling fsync (`eatmydata`) is only for development. It will cause data loss on crashes.
+</Warning>
+
+## Limitations
+
+Docker deployments have several limitations:
+
+- **No high availability**: Single instance only
+- **Limited scalability**: Cannot distribute across multiple machines
+- **Manual orchestration**: No automatic failover or restart
+- **Storage performance**: May not match production requirements
+- **Networking**: More complex for multi-host setups
+
+For production use, deploy on [Kubernetes](/deployment/self-managed/kubernetes) or use [Materialize Cloud](/deployment/cloud/overview).
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Kubernetes Deployment" icon="dharmachakra" href="/deployment/self-managed/kubernetes">
+    Deploy for production on Kubernetes
+  </Card>
+  <Card title="Connect Data Sources" icon="database" href="/ingest-data/overview">
+    Learn how to connect to Kafka, PostgreSQL, and more
+  </Card>
+  <Card title="Create Materialized Views" icon="eye" href="/transform-data/materialized-views">
+    Build real-time transformations
+  </Card>
+  <Card title="Configuration Reference" icon="gear" href="/deployment/self-managed/configuration">
+    Detailed configuration options
+  </Card>
+</CardGroup>

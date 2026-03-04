@@ -1,0 +1,504 @@
+---
+title: Monitoring Operations
+description: Monitor Materialize using system catalog tables, track cluster health, query performance, and operational metrics.
+---
+
+## Overview
+
+Materialize exposes comprehensive operational metrics through system catalog tables in the `mz_catalog` and `mz_internal` schemas. This guide covers essential monitoring queries for tracking cluster health, query performance, resource usage, and dataflow metrics.
+
+## System Catalog Overview
+
+### Catalog Schemas
+
+Materialize provides three main catalog schemas:
+
+- **`mz_catalog`**: Stable metadata about objects (sources, views, indexes, clusters)
+- **`mz_internal`**: Internal metrics and operational data (not stable, may change)
+- **`mz_introspection`**: Dataflow-level debugging and performance data
+
+### Key Monitoring Tables
+
+| Table | Schema | Purpose |
+|-------|--------|----------|
+| `mz_clusters` | `mz_catalog` | Cluster configuration |
+| `mz_cluster_replicas` | `mz_catalog` | Replica information |
+| `mz_cluster_replica_metrics` | `mz_internal` | Resource utilization |
+| `mz_recent_activity_log` | `mz_internal` | Query execution history |
+| `mz_cluster_replica_frontiers` | `mz_catalog` | Data freshness tracking |
+| `mz_materialized_views` | `mz_catalog` | Materialized view metadata |
+| `mz_indexes` | `mz_catalog` | Index metadata |
+
+## Cluster Monitoring
+
+### Cluster Resource Utilization
+
+Monitor CPU, memory, and disk usage across all clusters:
+
+```sql
+SELECT 
+  c.name AS cluster_name,
+  r.name AS replica_name,
+  m.process_id,
+  ROUND(m.cpu_nano_cores / 1000000000.0, 2) AS cpu_cores,
+  ROUND(m.memory_bytes / (1024.0^3), 2) AS memory_gb,
+  ROUND(sizes.memory_bytes / (1024.0^3), 2) AS memory_limit_gb,
+  ROUND(100.0 * m.memory_bytes / sizes.memory_bytes, 1) AS memory_pct,
+  ROUND(m.disk_bytes / (1024.0^3), 2) AS disk_gb
+FROM mz_internal.mz_cluster_replica_metrics m
+JOIN mz_cluster_replicas r ON m.replica_id = r.id
+JOIN mz_clusters c ON r.cluster_id = c.id
+JOIN mz_cluster_replica_sizes sizes ON r.size = sizes.size
+ORDER BY c.name, r.name, m.process_id;
+```
+
+### Historical Resource Usage
+
+Track resource trends over time:
+
+```sql
+SELECT 
+  c.name AS cluster_name,
+  r.name AS replica_name,
+  h.occurred_at,
+  ROUND(h.cpu_nano_cores / 1000000000.0, 2) AS cpu_cores,
+  ROUND(h.memory_bytes / (1024.0^3), 2) AS memory_gb,
+  ROUND(h.disk_bytes / (1024.0^3), 2) AS disk_gb
+FROM mz_internal.mz_cluster_replica_metrics_history h
+JOIN mz_cluster_replicas r ON h.replica_id = r.id
+JOIN mz_clusters c ON r.cluster_id = c.id
+WHERE h.occurred_at > NOW() - INTERVAL '1 hour'
+ORDER BY h.occurred_at DESC, c.name, r.name;
+```
+
+### Cluster Status Overview
+
+Get a quick status of all clusters:
+
+```sql
+SELECT 
+  c.name AS cluster_name,
+  c.size,
+  c.replication_factor,
+  COUNT(r.id) AS active_replicas,
+  CASE 
+    WHEN c.replication_factor = 0 THEN 'Paused'
+    WHEN COUNT(r.id) = 0 THEN 'No Replicas'
+    WHEN COUNT(r.id) < c.replication_factor THEN 'Degraded'
+    ELSE 'Healthy'
+  END AS status
+FROM mz_clusters c
+LEFT JOIN mz_cluster_replicas r ON c.id = r.cluster_id
+WHERE c.managed = true
+GROUP BY c.name, c.size, c.replication_factor
+ORDER BY c.name;
+```
+
+### Identifying High Memory Clusters
+
+Find clusters approaching memory limits:
+
+```sql
+SELECT 
+  c.name AS cluster_name,
+  r.name AS replica_name,
+  ROUND(m.memory_bytes / (1024.0^3), 2) AS memory_gb,
+  ROUND(sizes.memory_bytes / (1024.0^3), 2) AS limit_gb,
+  ROUND(100.0 * m.memory_bytes / sizes.memory_bytes, 1) AS memory_pct
+FROM mz_internal.mz_cluster_replica_metrics m
+JOIN mz_cluster_replicas r ON m.replica_id = r.id
+JOIN mz_clusters c ON r.cluster_id = c.id
+JOIN mz_cluster_replica_sizes sizes ON r.size = sizes.size
+WHERE m.memory_bytes > sizes.memory_bytes * 0.8  -- Over 80%
+ORDER BY memory_pct DESC;
+```
+
+## Query Performance Monitoring
+
+### Recent Query Activity
+
+View recent queries with execution details:
+
+```sql
+SELECT 
+  began_at,
+  finished_at,
+  finished_at - began_at AS duration,
+  cluster_name,
+  database_name,
+  statement_type,
+  finished_status,
+  rows_returned,
+  execution_strategy,
+  LEFT(sql, 100) AS query_preview
+FROM mz_internal.mz_recent_activity_log
+WHERE statement_type = 'select'
+ORDER BY began_at DESC
+LIMIT 20;
+```
+
+### Slow Query Detection
+
+Identify queries taking longer than a threshold:
+
+```sql
+SELECT 
+  began_at,
+  finished_at - began_at AS duration,
+  cluster_name,
+  execution_strategy,
+  rows_returned,
+  sql
+FROM mz_internal.mz_recent_activity_log
+WHERE 
+  statement_type = 'select'
+  AND finished_at IS NOT NULL
+  AND (finished_at - began_at) > INTERVAL '5 seconds'
+ORDER BY duration DESC
+LIMIT 10;
+```
+
+### Query Success Rate
+
+Calculate query success metrics:
+
+```sql
+SELECT 
+  cluster_name,
+  statement_type,
+  COUNT(*) AS total_queries,
+  SUM(CASE WHEN finished_status = 'success' THEN 1 ELSE 0 END) AS successful,
+  SUM(CASE WHEN finished_status = 'error' THEN 1 ELSE 0 END) AS errors,
+  SUM(CASE WHEN finished_status = 'canceled' THEN 1 ELSE 0 END) AS canceled,
+  ROUND(100.0 * SUM(CASE WHEN finished_status = 'success' THEN 1 ELSE 0 END) / COUNT(*), 2) AS success_rate
+FROM mz_internal.mz_recent_activity_log
+WHERE 
+  began_at > NOW() - INTERVAL '1 hour'
+  AND statement_type IN ('select', 'insert', 'update', 'delete')
+GROUP BY cluster_name, statement_type
+ORDER BY cluster_name, statement_type;
+```
+
+### Query Execution Strategies
+
+Analyze how queries are executed:
+
+```sql
+SELECT 
+  execution_strategy,
+  COUNT(*) AS query_count,
+  ROUND(AVG(EXTRACT(EPOCH FROM (finished_at - began_at))), 3) AS avg_duration_sec,
+  ROUND(MAX(EXTRACT(EPOCH FROM (finished_at - began_at))), 3) AS max_duration_sec
+FROM mz_internal.mz_recent_activity_log
+WHERE 
+  statement_type = 'select'
+  AND finished_at IS NOT NULL
+  AND began_at > NOW() - INTERVAL '1 hour'
+GROUP BY execution_strategy
+ORDER BY query_count DESC;
+```
+
+**Execution strategies**:
+- `constant`: Computed in control plane
+- `fast-path`: Read directly from in-memory index
+- `standard`: Computed by temporary dataflow
+
+## Dataflow Health Monitoring
+
+### Materialized View Lag
+
+Check if materialized views are behind:
+
+```sql
+SELECT 
+  mv.name AS view_name,
+  c.name AS cluster_name,
+  r.name AS replica_name,
+  f.write_frontier,
+  mz_now() AS current_time,
+  mz_now() - f.write_frontier AS lag
+FROM mz_catalog.mz_cluster_replica_frontiers f
+JOIN mz_materialized_views mv ON f.object_id = mv.id
+JOIN mz_cluster_replicas r ON f.replica_id = r.id
+JOIN mz_clusters c ON r.cluster_id = c.id
+ORDER BY lag DESC;
+```
+
+### Index Freshness
+
+Monitor index data freshness:
+
+```sql
+SELECT 
+  i.name AS index_name,
+  c.name AS cluster_name,
+  r.name AS replica_name,
+  f.write_frontier,
+  mz_now() - f.write_frontier AS lag_ms
+FROM mz_catalog.mz_cluster_replica_frontiers f
+JOIN mz_indexes i ON f.object_id = i.id
+JOIN mz_cluster_replicas r ON f.replica_id = r.id
+JOIN mz_clusters c ON r.cluster_id = c.id
+WHERE mz_now() - f.write_frontier > 1000  -- Lag > 1 second
+ORDER BY lag_ms DESC;
+```
+
+### Source Ingestion Status
+
+Monitor source ingestion progress:
+
+```sql
+SELECT 
+  s.name AS source_name,
+  c.name AS cluster_name,
+  r.name AS replica_name,
+  f.write_frontier,
+  mz_now() - f.write_frontier AS lag_ms
+FROM mz_catalog.mz_cluster_replica_frontiers f
+JOIN mz_sources s ON f.object_id = s.id
+JOIN mz_cluster_replicas r ON f.replica_id = r.id
+JOIN mz_clusters c ON r.cluster_id = c.id
+ORDER BY s.name, r.name;
+```
+
+## Object Inventory
+
+### Objects by Cluster
+
+List all objects on each cluster:
+
+```sql
+SELECT 
+  c.name AS cluster_name,
+  'materialized view' AS object_type,
+  COUNT(*) AS count
+FROM mz_materialized_views mv
+JOIN mz_clusters c ON mv.cluster_id = c.id
+GROUP BY c.name
+
+UNION ALL
+
+SELECT 
+  c.name AS cluster_name,
+  'index' AS object_type,
+  COUNT(*) AS count
+FROM mz_indexes i
+JOIN mz_clusters c ON i.cluster_id = c.id
+GROUP BY c.name
+
+UNION ALL
+
+SELECT 
+  c.name AS cluster_name,
+  'source' AS object_type,
+  COUNT(*) AS count
+FROM mz_sources s
+JOIN mz_clusters c ON s.cluster_id = c.id
+GROUP BY c.name
+
+ORDER BY cluster_name, object_type;
+```
+
+### Storage Usage by Object Type
+
+Identify storage consumption:
+
+```sql
+SELECT 
+  CASE 
+    WHEN o.type = 'materialized-view' THEN 'Materialized View'
+    WHEN o.type = 'index' THEN 'Index'
+    WHEN o.type = 'source' THEN 'Source'
+    WHEN o.type = 'table' THEN 'Table'
+    ELSE o.type
+  END AS object_type,
+  COUNT(*) AS count,
+  ROUND(SUM(s.size_bytes) / (1024.0^3), 2) AS total_gb
+FROM mz_internal.mz_storage_usage s
+JOIN mz_objects o ON s.object_id = o.id
+GROUP BY o.type
+ORDER BY total_gb DESC;
+```
+
+### Largest Objects
+
+Find objects consuming the most storage:
+
+```sql
+SELECT 
+  o.name AS object_name,
+  o.type AS object_type,
+  ROUND(s.size_bytes / (1024.0^3), 2) AS size_gb
+FROM mz_internal.mz_storage_usage s
+JOIN mz_objects o ON s.object_id = o.id
+ORDER BY s.size_bytes DESC
+LIMIT 20;
+```
+
+## Audit and Security Monitoring
+
+### Recent DDL Changes
+
+Track schema modifications:
+
+```sql
+SELECT 
+  occurred_at,
+  event_type,
+  object_type,
+  "user",
+  details->>'object_name' AS object_name
+FROM mz_audit_events
+WHERE 
+  event_type IN ('create', 'drop', 'alter')
+  AND occurred_at > NOW() - INTERVAL '24 hours'
+ORDER BY occurred_at DESC
+LIMIT 50;
+```
+
+### Cluster Changes
+
+Monitor cluster modifications:
+
+```sql
+SELECT 
+  occurred_at,
+  event_type,
+  "user",
+  details->>'cluster_name' AS cluster_name,
+  details->>'size' AS size,
+  details->>'replication_factor' AS replication_factor
+FROM mz_audit_events
+WHERE 
+  object_type IN ('cluster', 'cluster-replica')
+  AND occurred_at > NOW() - INTERVAL '7 days'
+ORDER BY occurred_at DESC;
+```
+
+### User Activity Summary
+
+Summarize activity by user:
+
+```sql
+SELECT 
+  authenticated_user,
+  statement_type,
+  COUNT(*) AS query_count,
+  SUM(CASE WHEN finished_status = 'success' THEN 1 ELSE 0 END) AS successful,
+  SUM(CASE WHEN finished_status = 'error' THEN 1 ELSE 0 END) AS errors
+FROM mz_internal.mz_recent_activity_log
+WHERE began_at > NOW() - INTERVAL '1 hour'
+GROUP BY authenticated_user, statement_type
+ORDER BY query_count DESC;
+```
+
+## Credit Usage Tracking
+
+### Current Credit Consumption Rate
+
+Calculate hourly credit usage:
+
+```sql
+SELECT 
+  c.name AS cluster_name,
+  c.size,
+  c.replication_factor,
+  s.credits_per_hour AS credits_per_replica,
+  s.credits_per_hour * c.replication_factor AS total_credits_per_hour
+FROM mz_clusters c
+JOIN mz_cluster_replica_sizes s ON c.size = s.size
+WHERE c.replication_factor > 0
+ORDER BY total_credits_per_hour DESC;
+```
+
+### Total Environment Cost
+
+Sum all cluster costs:
+
+```sql
+SELECT 
+  SUM(s.credits_per_hour * c.replication_factor) AS total_credits_per_hour,
+  SUM(s.credits_per_hour * c.replication_factor) * 24 AS estimated_daily_credits,
+  SUM(s.credits_per_hour * c.replication_factor) * 24 * 30 AS estimated_monthly_credits
+FROM mz_clusters c
+JOIN mz_cluster_replica_sizes s ON c.size = s.size
+WHERE c.replication_factor > 0;
+```
+
+## Alerting Queries
+
+### High Memory Alert
+
+```sql
+-- Alert when any cluster exceeds 85% memory
+SELECT 
+  c.name AS cluster_name,
+  r.name AS replica_name,
+  ROUND(100.0 * m.memory_bytes / sizes.memory_bytes, 1) AS memory_pct
+FROM mz_internal.mz_cluster_replica_metrics m
+JOIN mz_cluster_replicas r ON m.replica_id = r.id
+JOIN mz_clusters c ON r.cluster_id = c.id
+JOIN mz_cluster_replica_sizes sizes ON r.size = sizes.size
+WHERE m.memory_bytes > sizes.memory_bytes * 0.85;
+```
+
+### Lagging Materialized Views
+
+```sql
+-- Alert when materialized views lag > 10 seconds
+SELECT 
+  mv.name AS view_name,
+  c.name AS cluster_name,
+  (mz_now() - f.write_frontier) / 1000.0 AS lag_seconds
+FROM mz_catalog.mz_cluster_replica_frontiers f
+JOIN mz_materialized_views mv ON f.object_id = mv.id
+JOIN mz_cluster_replicas r ON f.replica_id = r.id
+JOIN mz_clusters c ON r.cluster_id = c.id
+WHERE mz_now() - f.write_frontier > 10000;  -- 10 seconds
+```
+
+### Failed Queries Alert
+
+```sql
+-- Alert on high error rate (>5% in last 15 minutes)
+SELECT 
+  cluster_name,
+  COUNT(*) AS total,
+  SUM(CASE WHEN finished_status = 'error' THEN 1 ELSE 0 END) AS errors,
+  ROUND(100.0 * SUM(CASE WHEN finished_status = 'error' THEN 1 ELSE 0 END) / COUNT(*), 2) AS error_rate
+FROM mz_internal.mz_recent_activity_log
+WHERE 
+  began_at > NOW() - INTERVAL '15 minutes'
+  AND statement_type = 'select'
+GROUP BY cluster_name
+HAVING ROUND(100.0 * SUM(CASE WHEN finished_status = 'error' THEN 1 ELSE 0 END) / COUNT(*), 2) > 5;
+```
+
+## Best Practices
+
+### Monitoring Strategy
+
+1. **Establish baselines**: Track normal resource usage patterns
+2. **Set up alerts**: Configure proactive notifications for anomalies
+3. **Regular reviews**: Weekly review of slow queries and resource usage
+4. **Capacity planning**: Monitor trends to anticipate scaling needs
+5. **Document thresholds**: Define what "normal" looks like for your workloads
+
+### Query Optimization
+
+1. **Use temporal filters**: Limit historical data in monitoring queries
+2. **Aggregate when possible**: Summarize instead of returning raw data
+3. **Index monitoring views**: Create indexes on frequently queried system tables
+4. **Schedule reports**: Run heavy monitoring queries during off-peak hours
+
+### Retention Considerations
+
+- `mz_recent_activity_log`: Retains data for 24 hours
+- `mz_cluster_replica_metrics_history`: Check retention policy
+- `mz_audit_events`: Persistent, consider archiving old events
+
+## Related Topics
+
+- [Cluster Operations](/operations/clusters)
+- [Performance Tuning](/operations/performance)
+- [Index Operations](/operations/indexes)

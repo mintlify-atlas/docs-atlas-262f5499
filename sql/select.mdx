@@ -1,0 +1,493 @@
+---
+title: 'SELECT'
+description: 'Query data from sources, tables, views, and materialized views'
+---
+
+## Overview
+
+SELECT is used to query data in Materialize. It can be used interactively for ad hoc queries or embedded in view definitions.
+
+## Syntax
+
+```sql
+[WITH <cte> [, ...]]
+SELECT [DISTINCT | ALL] <select_expr> [, ...]
+  FROM <table_expr> [, ...]
+  [WHERE <condition>]
+  [GROUP BY <expr> [, ...]]
+  [HAVING <condition>]
+  [ORDER BY <expr> [ASC | DESC] [NULLS {FIRST | LAST}] [, ...]]
+  [LIMIT <count>]
+  [OFFSET <start>]
+  [OPTIONS (<option> = <value> [, ...])];
+```
+
+## Key Concepts
+
+### Query Execution Modes
+
+Materialize executes SELECT queries in different ways:
+
+**Reading from Indexes** (Fastest)
+```sql
+-- Create indexed view
+CREATE VIEW user_stats AS
+  SELECT user_id, COUNT(*) as order_count
+  FROM orders
+  GROUP BY user_id;
+
+CREATE INDEX user_stats_idx ON user_stats (user_id);
+
+-- Fast lookup from index
+SELECT * FROM user_stats WHERE user_id = 123;
+```
+
+**Reading from Materialized Views** (Fast)
+```sql
+CREATE MATERIALIZED VIEW daily_totals AS
+  SELECT date, SUM(amount) as total
+  FROM orders
+  GROUP BY date;
+
+-- Read from durable storage
+SELECT * FROM daily_totals;
+```
+
+**Ad Hoc Queries** (Computes on demand)
+```sql
+-- Creates ephemeral dataflow
+SELECT product_id, AVG(price)
+FROM orders
+WHERE order_date >= '2024-01-01'
+GROUP BY product_id;
+```
+
+## Basic Queries
+
+### Simple Selection
+
+```sql
+SELECT id, name, email
+FROM users;
+```
+
+### With WHERE Clause
+
+```sql
+SELECT *
+FROM orders
+WHERE amount > 100
+  AND status = 'completed';
+```
+
+### With ORDER BY
+
+```sql
+SELECT name, total_spent
+FROM customers
+ORDER BY total_spent DESC
+LIMIT 10;
+```
+
+### With DISTINCT
+
+```sql
+SELECT DISTINCT country
+FROM customers
+ORDER BY country;
+```
+
+## Aggregations
+
+### Basic Aggregation
+
+```sql
+SELECT
+  COUNT(*) as order_count,
+  SUM(amount) as total_revenue,
+  AVG(amount) as avg_order_value,
+  MIN(amount) as min_order,
+  MAX(amount) as max_order
+FROM orders;
+```
+
+### GROUP BY
+
+```sql
+SELECT
+  product_id,
+  COUNT(*) as times_ordered,
+  SUM(quantity) as total_quantity,
+  AVG(price) as avg_price
+FROM order_items
+GROUP BY product_id;
+```
+
+### HAVING Clause
+
+```sql
+SELECT
+  customer_id,
+  COUNT(*) as order_count
+FROM orders
+GROUP BY customer_id
+HAVING COUNT(*) > 10;
+```
+
+## Joins
+
+### Inner Join
+
+```sql
+SELECT
+  c.name,
+  o.order_id,
+  o.amount
+FROM customers c
+INNER JOIN orders o ON c.customer_id = o.customer_id;
+```
+
+### Left Join
+
+```sql
+SELECT
+  c.name,
+  COUNT(o.order_id) as order_count
+FROM customers c
+LEFT JOIN orders o ON c.customer_id = o.customer_id
+GROUP BY c.name;
+```
+
+### Multiple Joins
+
+```sql
+SELECT
+  c.name as customer_name,
+  p.name as product_name,
+  oi.quantity,
+  oi.price
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+JOIN order_items oi ON o.order_id = oi.order_id
+JOIN products p ON oi.product_id = p.product_id;
+```
+
+## Window Functions
+
+### ROW_NUMBER
+
+```sql
+SELECT
+  name,
+  amount,
+  ROW_NUMBER() OVER (ORDER BY amount DESC) as rank
+FROM orders;
+```
+
+### RANK and DENSE_RANK
+
+```sql
+SELECT
+  product_id,
+  revenue,
+  RANK() OVER (ORDER BY revenue DESC) as rank,
+  DENSE_RANK() OVER (ORDER BY revenue DESC) as dense_rank
+FROM product_revenue;
+```
+
+### Partition By
+
+```sql
+SELECT
+  category,
+  product_name,
+  sales,
+  RANK() OVER (PARTITION BY category ORDER BY sales DESC) as category_rank
+FROM products;
+```
+
+### LAG and LEAD
+
+```sql
+SELECT
+  date,
+  revenue,
+  LAG(revenue) OVER (ORDER BY date) as prev_day_revenue,
+  LEAD(revenue) OVER (ORDER BY date) as next_day_revenue
+FROM daily_revenue;
+```
+
+## Common Table Expressions (CTEs)
+
+### Basic CTE
+
+```sql
+WITH high_value_customers AS (
+  SELECT customer_id, SUM(amount) as total_spent
+  FROM orders
+  GROUP BY customer_id
+  HAVING SUM(amount) > 10000
+)
+SELECT
+  c.name,
+  hvc.total_spent
+FROM high_value_customers hvc
+JOIN customers c ON hvc.customer_id = c.customer_id;
+```
+
+### Multiple CTEs
+
+```sql
+WITH
+  monthly_sales AS (
+    SELECT
+      date_trunc('month', order_date) as month,
+      SUM(amount) as total
+    FROM orders
+    GROUP BY month
+  ),
+  avg_monthly AS (
+    SELECT AVG(total) as avg_total
+    FROM monthly_sales
+  )
+SELECT
+  ms.month,
+  ms.total,
+  ms.total - am.avg_total as diff_from_avg
+FROM monthly_sales ms
+CROSS JOIN avg_monthly am;
+```
+
+### Recursive CTEs
+
+See [Recursive CTEs](/sql/select/recursive-ctes) for detailed documentation.
+
+## Subqueries
+
+### Scalar Subquery
+
+```sql
+SELECT
+  name,
+  amount,
+  amount - (SELECT AVG(amount) FROM orders) as diff_from_avg
+FROM orders;
+```
+
+### IN Subquery
+
+```sql
+SELECT *
+FROM products
+WHERE category_id IN (
+  SELECT category_id 
+  FROM categories 
+  WHERE active = true
+);
+```
+
+### EXISTS Subquery
+
+```sql
+SELECT *
+FROM customers c
+WHERE EXISTS (
+  SELECT 1
+  FROM orders o
+  WHERE o.customer_id = c.customer_id
+    AND o.order_date >= '2024-01-01'
+);
+```
+
+## Query Hints
+
+Optimize query execution with hints:
+
+```sql
+SELECT
+  user_id,
+  COUNT(*) as event_count
+FROM events
+GROUP BY user_id
+OPTIONS (AGGREGATE INPUT GROUP SIZE = 100);
+```
+
+<ParamField path="AGGREGATE INPUT GROUP SIZE" type="uint8">
+  Expected rows per group key in aggregations. Helps optimize `MIN` and `MAX` expressions.
+</ParamField>
+
+<ParamField path="DISTINCT ON INPUT GROUP SIZE" type="uint8">
+  Expected rows per group in `DISTINCT ON`. Optimizes Top-K patterns.
+</ParamField>
+
+<ParamField path="LIMIT INPUT GROUP SIZE" type="uint8">
+  Expected rows per group for `LIMIT`. Optimizes Top-K patterns.
+</ParamField>
+
+## Set Operations
+
+### UNION
+
+```sql
+SELECT email FROM customers
+UNION
+SELECT email FROM prospects;
+```
+
+### UNION ALL
+
+```sql
+SELECT 'customer' as type, email FROM customers
+UNION ALL
+SELECT 'prospect' as type, email FROM prospects;
+```
+
+### INTERSECT
+
+```sql
+SELECT email FROM customers
+INTERSECT
+SELECT email FROM newsletter_subscribers;
+```
+
+### EXCEPT
+
+```sql
+SELECT email FROM customers
+EXCEPT
+SELECT email FROM unsubscribed;
+```
+
+## Advanced Examples
+
+### Top N Per Group
+
+```sql
+WITH ranked AS (
+  SELECT
+    category,
+    product_name,
+    sales,
+    ROW_NUMBER() OVER (
+      PARTITION BY category 
+      ORDER BY sales DESC
+    ) as rank
+  FROM products
+)
+SELECT category, product_name, sales
+FROM ranked
+WHERE rank <= 5;
+```
+
+### Moving Average
+
+```sql
+SELECT
+  date,
+  revenue,
+  AVG(revenue) OVER (
+    ORDER BY date
+    ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+  ) as moving_avg_7_days
+FROM daily_revenue;
+```
+
+### Cumulative Sum
+
+```sql
+SELECT
+  order_date,
+  amount,
+  SUM(amount) OVER (ORDER BY order_date) as cumulative_revenue
+FROM orders;
+```
+
+### Pivot Table (Manual)
+
+```sql
+SELECT
+  product_id,
+  SUM(CASE WHEN region = 'North' THEN sales ELSE 0 END) as north_sales,
+  SUM(CASE WHEN region = 'South' THEN sales ELSE 0 END) as south_sales,
+  SUM(CASE WHEN region = 'East' THEN sales ELSE 0 END) as east_sales,
+  SUM(CASE WHEN region = 'West' THEN sales ELSE 0 END) as west_sales
+FROM regional_sales
+GROUP BY product_id;
+```
+
+## Performance Considerations
+
+### Use Indexes
+
+```sql
+-- Create indexed view for frequent queries
+CREATE VIEW user_orders AS
+  SELECT user_id, COUNT(*) as order_count
+  FROM orders
+  GROUP BY user_id;
+
+CREATE INDEX user_orders_idx ON user_orders (user_id);
+```
+
+### Use Materialized Views
+
+```sql
+-- For expensive computations
+CREATE MATERIALIZED VIEW product_stats AS
+  SELECT
+    p.product_id,
+    p.name,
+    COUNT(oi.order_id) as times_ordered,
+    SUM(oi.quantity) as total_quantity
+  FROM products p
+  LEFT JOIN order_items oi ON p.product_id = oi.product_id
+  GROUP BY p.product_id, p.name;
+```
+
+### Filter Early
+
+```sql
+-- Good: Filter before join
+SELECT *
+FROM (
+  SELECT * FROM orders WHERE order_date >= '2024-01-01'
+) recent_orders
+JOIN customers ON recent_orders.customer_id = customers.customer_id;
+```
+
+## Best Practices
+
+1. **Create Indexes for Frequent Queries**
+   ```sql
+   CREATE INDEX ON my_view (frequently_filtered_column);
+   ```
+
+2. **Use Materialized Views for Complex Queries**
+   ```sql
+   CREATE MATERIALIZED VIEW complex_report AS
+     SELECT ... -- complex query
+   ```
+
+3. **Use CTEs for Readability**
+   ```sql
+   WITH step1 AS (...), step2 AS (...)
+   SELECT ... FROM step2;
+   ```
+
+4. **Avoid SELECT ***
+   ```sql
+   -- Better: specify columns
+   SELECT id, name, email FROM users;
+   ```
+
+5. **Use Query Hints for Optimization**
+   ```sql
+   OPTIONS (AGGREGATE INPUT GROUP SIZE = 1000)
+   ```
+
+## Related Pages
+
+- [CREATE VIEW](/sql/create-view)
+- [CREATE MATERIALIZED VIEW](/sql/create-materialized-view)
+- [CREATE INDEX](/sql/create-index)
+- [SUBSCRIBE](/sql/subscribe)

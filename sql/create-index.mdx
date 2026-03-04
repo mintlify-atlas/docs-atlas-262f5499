@@ -1,0 +1,325 @@
+---
+title: 'CREATE INDEX'
+description: 'Create in-memory indexes for fast query performance'
+---
+
+## Overview
+
+CREATE INDEX creates an in-memory index on a source, view, or materialized view. Indexes maintain query results incrementally and store them in memory, providing fast access for queries within a cluster.
+
+## Syntax
+
+```sql
+-- Create index with specific columns
+CREATE INDEX [IF NOT EXISTS] <index_name> 
+  ON <object_name> (<column_expr> [, ...])
+  [IN CLUSTER <cluster_name>];
+
+-- Create default index
+CREATE DEFAULT INDEX [IF NOT EXISTS] <index_name>
+  ON <object_name>
+  [IN CLUSTER <cluster_name>];
+```
+
+## Key Concepts
+
+### In-Memory Incremental Maintenance
+
+Indexes store results in memory and update incrementally:
+
+```sql
+CREATE VIEW user_orders AS
+  SELECT user_id, COUNT(*) AS order_count
+  FROM orders
+  GROUP BY user_id;
+
+-- Create index to maintain results in memory
+CREATE INDEX user_orders_idx ON user_orders (user_id);
+
+-- Queries can now read directly from memory
+SELECT * FROM user_orders WHERE user_id = 123;  -- Very fast!
+```
+
+As orders are inserted, updated, or deleted, the index updates incrementally—only processing the changes, not recomputing from scratch.
+
+### Cluster-Local Storage
+
+Indexes are scoped to a specific cluster:
+
+```sql
+-- Create index in cluster_a
+SET cluster = cluster_a;
+CREATE INDEX idx ON my_view (column);
+
+-- Query from cluster_a uses the index (fast)
+SELECT * FROM my_view WHERE column = 'value';
+
+-- Query from cluster_b does NOT use the index
+SET cluster = cluster_b;
+SELECT * FROM my_view WHERE column = 'value';  -- Slower
+```
+
+Create indexes in each cluster where you query the data.
+
+## Parameters
+
+<ParamField path="index_name" type="identifier" required>
+  Name of the index to create
+</ParamField>
+
+<ParamField path="object_name" type="identifier" required>
+  Name of the source, view, or materialized view to index
+</ParamField>
+
+<ParamField path="column_expr" type="expression">
+  Column name or expression to include in the index key. Multiple columns can be specified.
+</ParamField>
+
+<ParamField path="cluster_name" type="identifier">
+  Cluster where the index will be maintained. Defaults to the active cluster.
+</ParamField>
+
+## Default Indexes
+
+Create an index using automatically selected columns:
+
+```sql
+CREATE DEFAULT INDEX user_stats_idx ON user_stats;
+```
+
+Materialize selects columns based on:
+- Unique keys inferred from the query
+- All columns if no unique key can be inferred
+
+## Index Structure
+
+Indexes store tuples in the form:
+
+```
+((indexed columns), (all columns in the view))
+```
+
+Example:
+```sql
+CREATE VIEW v AS 
+  SELECT user_id, name, email FROM users;
+
+CREATE INDEX v_idx ON v (user_id);
+-- Stores: ((user_id), (user_id, name, email))
+```
+
+## Examples
+
+### Basic Index
+
+```sql
+CREATE VIEW active_users AS
+  SELECT * FROM users
+  WHERE last_login > NOW() - INTERVAL '30 days';
+
+CREATE INDEX active_users_idx ON active_users (user_id);
+```
+
+### Multi-Column Index
+
+```sql
+CREATE VIEW orders_by_customer AS
+  SELECT customer_id, order_date, amount
+  FROM orders;
+
+CREATE INDEX orders_customer_date_idx 
+  ON orders_by_customer (customer_id, order_date);
+
+-- Optimizes queries like:
+SELECT * FROM orders_by_customer 
+WHERE customer_id = 123 AND order_date >= '2024-01-01';
+```
+
+### Index with Expressions
+
+```sql
+CREATE VIEW users_upper AS
+  SELECT user_id, name, email FROM users;
+
+-- Index on uppercase email
+CREATE INDEX users_upper_email_idx 
+  ON users_upper (upper(email));
+
+-- Optimizes queries like:
+SELECT * FROM users_upper 
+WHERE upper(email) = 'USER@EXAMPLE.COM';
+```
+
+### Optimizing Joins
+
+```sql
+CREATE VIEW customers AS
+  SELECT customer_id, name FROM customer_source;
+
+CREATE VIEW orders AS
+  SELECT order_id, customer_id, amount FROM order_source;
+
+-- Index on join column
+CREATE INDEX customers_idx ON customers (customer_id);
+CREATE INDEX orders_customer_idx ON orders (customer_id);
+
+-- This join is now efficient
+CREATE VIEW customer_orders AS
+  SELECT c.name, o.order_id, o.amount
+  FROM customers c
+  JOIN orders o ON c.customer_id = o.customer_id;
+```
+
+### Index for Aggregations
+
+```sql
+CREATE VIEW product_sales AS
+  SELECT
+    product_id,
+    SUM(quantity) AS total_quantity,
+    SUM(amount) AS total_revenue
+  FROM order_items
+  GROUP BY product_id;
+
+CREATE INDEX product_sales_idx ON product_sales (product_id);
+
+-- Fast lookups by product
+SELECT * FROM product_sales WHERE product_id = 456;
+```
+
+### Index on Materialized View
+
+```sql
+CREATE MATERIALIZED VIEW user_stats AS
+  SELECT
+    user_id,
+    COUNT(*) AS order_count,
+    SUM(amount) AS total_spent
+  FROM orders
+  GROUP BY user_id;
+
+-- Speed up queries on the materialized view
+CREATE INDEX user_stats_idx ON user_stats (user_id);
+```
+
+## Query Optimization
+
+Indexes optimize queries in several ways:
+
+### Point Lookups
+
+```sql
+CREATE INDEX users_id_idx ON users (id);
+
+-- Optimized by index
+SELECT * FROM users WHERE id = 123;
+```
+
+### Range Scans
+
+```sql
+CREATE INDEX orders_date_idx ON orders (order_date);
+
+-- Optimized by index
+SELECT * FROM orders 
+WHERE order_date >= '2024-01-01' 
+  AND order_date < '2024-02-01';
+```
+
+### Join Optimization
+
+```sql
+CREATE INDEX orders_customer_idx ON orders (customer_id);
+CREATE INDEX customers_id_idx ON customers (id);
+
+-- Join uses indexes for efficient lookup
+SELECT * FROM customers c
+JOIN orders o ON c.id = o.customer_id;
+```
+
+### Compound Filters
+
+```sql
+CREATE INDEX orders_multi_idx 
+  ON orders (customer_id, status);
+
+-- Optimized by compound index
+SELECT * FROM orders
+WHERE customer_id = 123 AND status = 'pending';
+```
+
+## Memory Considerations
+
+Index memory usage is proportional to:
+- Number of rows in the indexed object
+- Size of indexed columns
+- Size of all columns (stored in value)
+
+**Example sizing:**
+```sql
+-- View has 1M rows
+-- Each row: user_id (8 bytes) + name (20 bytes) + email (30 bytes)
+-- Index key: user_id (8 bytes)
+-- Index value: user_id + name + email (58 bytes)
+-- Total per row: ~66 bytes
+-- Total memory: ~66 MB (plus overhead)
+```
+
+## Best Practices
+
+1. **Index Join Columns**: Create indexes on foreign key columns used in joins
+   ```sql
+   CREATE INDEX ON orders (customer_id);  -- For joining with customers
+   ```
+
+2. **Index Filter Columns**: Index columns frequently used in WHERE clauses
+   ```sql
+   CREATE INDEX ON events (event_type);  -- For filtering by type
+   ```
+
+3. **Multi-Column Indexes**: Put most selective column first
+   ```sql
+   -- Good: customer_id is more selective
+   CREATE INDEX ON orders (customer_id, status);
+   ```
+
+4. **Monitor Memory**: Check cluster memory usage regularly
+   ```sql
+   SELECT * FROM mz_internal.mz_cluster_replica_utilization;
+   ```
+
+5. **One Index Per Cluster**: Create indexes in each cluster that queries the data
+
+6. **Use Expressions**: Index computed values for complex filters
+   ```sql
+   CREATE INDEX ON events (date_trunc('day', event_time));
+   ```
+
+## Indexes vs Materialized Views
+
+| Feature | Index on View | Materialized View |
+|---------|---------------|-------------------|
+| Storage | Memory (cluster-local) | Durable storage |
+| Cross-cluster | No | Yes |
+| Updates | Incremental | Incremental |
+| Persists after restart | No | Yes |
+| Best for | Fast queries in one cluster | Shared results, sinks |
+
+**When to Use Indexes:**
+- Query latency is critical
+- Results fit in memory
+- Querying from a single cluster
+- Don't need results to persist
+
+**When to Use Materialized Views:**
+- Results are very large
+- Need cross-cluster access
+- Feeding sinks
+- Results must survive restarts
+
+## Related Pages
+
+- [CREATE VIEW](/sql/create-view)
+- [CREATE MATERIALIZED VIEW](/sql/create-materialized-view)
+- [CREATE CLUSTER](/sql/create-cluster)
+- [Query Optimization](/transform-data/optimization)

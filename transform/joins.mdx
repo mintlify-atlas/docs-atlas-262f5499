@@ -1,0 +1,564 @@
+---
+title: 'Joins'
+description: 'Master join patterns in Materialize including multi-way joins, outer joins, self-joins, and lateral joins'
+---
+
+## Join fundamentals
+
+Materialize supports all standard SQL join types and maintains join results incrementally as source data changes. Unlike most streaming platforms, Materialize:
+
+- **No time windows required** - joins work over complete history of both streams
+- **No partitioning requirements** - join on any columns
+- **RDBMS-like experience** - familiar PostgreSQL join semantics
+
+Joins in Materialize use **differential dataflow**, which maintains minimal state and updates results incrementally.
+
+## Join types
+
+### Inner join
+
+Inner joins return only rows where the join condition matches in both tables:
+
+```sql
+CREATE MATERIALIZED VIEW employee_managers AS
+SELECT
+    e.id as employee_id,
+    e.name as employee_name,
+    m.name as manager_name
+FROM employees e
+INNER JOIN employees m ON e.manager_id = m.id;
+```
+
+This returns only employees who have managers. Employees without managers are excluded.
+
+#### Example: Order details
+
+```sql
+CREATE MATERIALIZED VIEW order_details AS
+SELECT 
+    o.id as order_id,
+    o.created_at,
+    u.email as customer_email,
+    p.name as product_name,
+    oi.quantity,
+    oi.price,
+    (oi.quantity * oi.price) as line_total
+FROM orders o
+INNER JOIN users u ON o.user_id = u.id
+INNER JOIN order_items oi ON o.id = oi.order_id
+INNER JOIN products p ON oi.product_id = p.id;
+```
+
+### Left outer join
+
+Left outer joins return all rows from the left table, plus matching rows from the right table. Non-matching rows from the right table appear as `NULL`:
+
+```sql
+CREATE MATERIALIZED VIEW users_with_order_counts AS
+SELECT 
+    u.id,
+    u.email,
+    u.signup_date,
+    COUNT(o.id) as order_count,
+    COALESCE(SUM(o.amount), 0) as total_spent
+FROM users u
+LEFT OUTER JOIN orders o ON u.id = o.user_id
+GROUP BY u.id, u.email, u.signup_date;
+```
+
+This includes:
+- All users, even those with zero orders
+- `COUNT(o.id)` returns 0 for users without orders (doesn't count NULLs)
+- `COALESCE` converts NULL sums to 0
+
+#### Example: Product inventory
+
+```sql
+CREATE MATERIALIZED VIEW product_sales_status AS
+SELECT 
+    p.id,
+    p.name,
+    p.category,
+    COUNT(oi.id) as times_sold,
+    COALESCE(SUM(oi.quantity), 0) as total_units_sold
+FROM products p
+LEFT JOIN order_items oi ON p.id = oi.product_id
+GROUP BY p.id, p.name, p.category;
+```
+
+Includes all products, even those never sold.
+
+### Right outer join
+
+Right outer joins are the mirror of left outer joins — all rows from the right table, plus matches from the left:
+
+```sql
+CREATE MATERIALIZED VIEW order_customer_info AS
+SELECT 
+    o.id as order_id,
+    o.amount,
+    u.email,
+    u.name
+FROM orders o
+RIGHT OUTER JOIN users u ON o.user_id = u.id;
+```
+
+This returns all users. Users without orders show NULL for order columns.
+
+<Tip>
+  In practice, `LEFT JOIN` is more common. Most queries are written as `SELECT ... FROM main_table LEFT JOIN additional_data`, making the "main" table the left side.
+</Tip>
+
+### Full outer join
+
+Full outer joins return all rows from both tables, matching where possible:
+
+```sql
+CREATE MATERIALIZED VIEW user_order_complete_view AS
+SELECT 
+    COALESCE(u.id, o.user_id) as user_id,
+    u.email,
+    o.id as order_id,
+    o.amount
+FROM users u
+FULL OUTER JOIN orders o ON u.id = o.user_id;
+```
+
+Results include:
+- Users with orders (matched)
+- Users without orders (NULL order columns)
+- Orders without users (NULL user columns) - possible if user was deleted
+
+#### Using ASSERT NOT NULL
+
+With full outer joins, Materialize may not infer that certain columns are non-null:
+
+```sql
+CREATE MATERIALIZED VIEW users_orders_reconciled
+WITH (ASSERT NOT NULL user_id) AS
+SELECT 
+    COALESCE(u.id, o.user_id) AS user_id,
+    u.name,
+    COUNT(o.id) as order_count
+FROM users u
+FULL OUTER JOIN orders o ON u.id = o.user_id
+GROUP BY user_id, u.name;
+```
+
+The `COALESCE` ensures `user_id` is never null (at least one of the IDs must exist), so we assert this to the query engine.
+
+### Cross join
+
+Cross joins return the Cartesian product of both tables:
+
+```sql
+CREATE MATERIALIZED VIEW all_user_product_combinations AS
+SELECT 
+    u.id as user_id,
+    u.email,
+    p.id as product_id,
+    p.name as product_name
+FROM users u
+CROSS JOIN products p;
+```
+
+<Warning>
+  Cross joins can produce extremely large result sets. If `users` has 1M rows and `products` has 10K rows, the result is 10 billion rows. Use with caution.
+</Warning>
+
+#### Practical use: Date scaffolding
+
+```sql
+-- Generate date range
+CREATE VIEW date_series AS
+SELECT generate_series(
+    DATE '2024-01-01',
+    DATE '2024-12-31',
+    INTERVAL '1 day'
+)::date as date;
+
+-- Cross join with users to create scaffold
+CREATE MATERIALIZED VIEW daily_user_scaffold AS
+SELECT 
+    u.id as user_id,
+    d.date
+FROM users u
+CROSS JOIN date_series d
+WHERE d.date >= u.signup_date;
+```
+
+## Multi-way joins
+
+Materialize excels at multi-way joins (joining 3+ tables). Traditional streaming systems struggle with this due to intermediate state explosion, but Materialize's **delta join** implementation handles it efficiently.
+
+### Three-way join example
+
+```sql
+CREATE MATERIALIZED VIEW order_summary AS
+SELECT 
+    o.id as order_id,
+    u.email,
+    r.name as region,
+    o.amount,
+    o.created_at
+FROM orders o
+JOIN users u ON o.user_id = u.id
+JOIN regions r ON u.region_id = r.id;
+```
+
+Materialize maintains indexes on join keys and processes changes from any table efficiently.
+
+### Six-way join example
+
+```sql
+CREATE MATERIALIZED VIEW complete_order_view AS
+SELECT 
+    o.id as order_id,
+    o.created_at as order_time,
+    u.email as customer_email,
+    u.tier as customer_tier,
+    r.name as region_name,
+    r.country,
+    p.name as product_name,
+    p.category,
+    cat.department,
+    oi.quantity,
+    oi.price,
+    (oi.quantity * oi.price) as line_total,
+    d.carrier,
+    d.tracking_number,
+    d.status as delivery_status
+FROM orders o
+JOIN users u ON o.user_id = u.id
+JOIN regions r ON u.region_id = r.id
+JOIN order_items oi ON o.id = oi.order_id
+JOIN products p ON oi.product_id = p.id
+JOIN categories cat ON p.category_id = cat.id
+LEFT JOIN deliveries d ON o.id = d.order_id;
+```
+
+This 7-table join is maintained incrementally. When any source table changes:
+
+1. Materialize identifies which result rows are affected
+2. Updates only those rows
+3. Propagates changes downstream
+
+The entire result set is never recomputed.
+
+### TPC-H benchmark query
+
+Here's TPC-H Query 15, demonstrating a complex multi-way join with subqueries:
+
+```sql
+CREATE SOURCE tpch
+  FROM LOAD GENERATOR TPCH (SCALE FACTOR 1)
+  FOR ALL TABLES;
+
+CREATE VIEW revenue (supplier_no, total_revenue) AS
+    SELECT
+        l_suppkey,
+        SUM(l_extendedprice * (1 - l_discount))
+    FROM
+        lineitem
+    WHERE
+        l_shipdate >= DATE '1996-01-01'
+        AND l_shipdate < DATE '1996-01-01' + INTERVAL '3' month
+    GROUP BY
+        l_suppkey;
+
+CREATE MATERIALIZED VIEW tpch_q15 AS
+  SELECT
+    s_suppkey,
+    s_name,
+    s_address,
+    s_phone,
+    total_revenue
+FROM
+    supplier,
+    revenue
+WHERE
+    s_suppkey = supplier_no
+    AND total_revenue = (
+        SELECT max(total_revenue)
+        FROM revenue
+    )
+ORDER BY
+    s_suppkey;
+```
+
+## Self-joins
+
+Self-joins join a table to itself. Common use cases include hierarchical data and comparing rows within the same table.
+
+### Hierarchical data
+
+```sql
+-- Employee hierarchy
+CREATE MATERIALIZED VIEW employee_hierarchy AS
+SELECT 
+    e.id as employee_id,
+    e.name as employee_name,
+    e.title as employee_title,
+    m.id as manager_id,
+    m.name as manager_name,
+    m.title as manager_title
+FROM employees e
+LEFT JOIN employees m ON e.manager_id = m.id;
+```
+
+### Finding related items
+
+```sql
+-- Products frequently bought together
+CREATE MATERIALIZED VIEW product_pairs AS
+SELECT 
+    oi1.product_id as product_a,
+    oi2.product_id as product_b,
+    COUNT(DISTINCT oi1.order_id) as times_purchased_together
+FROM order_items oi1
+JOIN order_items oi2 
+    ON oi1.order_id = oi2.order_id 
+    AND oi1.product_id < oi2.product_id  -- Avoid duplicates and self-pairs
+GROUP BY oi1.product_id, oi2.product_id
+HAVING COUNT(DISTINCT oi1.order_id) > 10;
+```
+
+The condition `oi1.product_id < oi2.product_id` ensures:
+- We don't pair a product with itself
+- We only get one direction of each pair (A→B, not also B→A)
+
+### Comparing consecutive records
+
+Find users who made multiple purchases within a short time:
+
+```sql
+CREATE MATERIALIZED VIEW rapid_repeat_purchasers AS
+SELECT 
+    o1.user_id,
+    o1.id as first_order_id,
+    o1.created_at as first_order_time,
+    o2.id as second_order_id,
+    o2.created_at as second_order_time,
+    (o2.created_at - o1.created_at) as time_between
+FROM orders o1
+JOIN orders o2 
+    ON o1.user_id = o2.user_id 
+    AND o1.created_at < o2.created_at
+    AND o2.created_at <= o1.created_at + INTERVAL '1 hour';
+```
+
+## Lateral joins
+
+`LATERAL` joins allow subqueries on the right side to reference columns from the left side. This enables correlated subqueries in the `FROM` clause.
+
+### Top-K per group pattern
+
+Find the top 3 products per category by revenue:
+
+```sql
+CREATE MATERIALIZED VIEW top_products_per_category AS
+SELECT 
+    category,
+    product_id,
+    product_name,
+    total_revenue
+FROM (
+    SELECT DISTINCT category FROM products
+) categories
+CROSS JOIN LATERAL (
+    SELECT 
+        p.id as product_id,
+        p.name as product_name,
+        SUM(oi.quantity * oi.price) as total_revenue
+    FROM products p
+    JOIN order_items oi ON p.id = oi.product_id
+    WHERE p.category = categories.category
+    GROUP BY p.id, p.name
+    ORDER BY total_revenue DESC
+    LIMIT 3
+) top_in_category
+ORDER BY category, total_revenue DESC;
+```
+
+This pattern:
+1. Gets distinct categories
+2. For each category, finds top 3 products by revenue
+3. Uses `LATERAL` so the inner query can reference `categories.category`
+
+<Tip>
+  For Top-K patterns, Materialize also supports optimized idioms using `DISTINCT ON`. See the [Top-K documentation](/transform/aggregations#top-k-pattern) for details.
+</Tip>
+
+### Per-user latest activity
+
+```sql
+CREATE MATERIALIZED VIEW user_latest_activities AS
+SELECT 
+    u.id as user_id,
+    u.email,
+    latest.activity_type,
+    latest.activity_time
+FROM users u
+CROSS JOIN LATERAL (
+    SELECT 
+        activity_type,
+        timestamp as activity_time
+    FROM user_activities
+    WHERE user_id = u.id
+    ORDER BY timestamp DESC
+    LIMIT 1
+) latest;
+```
+
+## Join optimization
+
+### Index join keys
+
+Create indexes on columns used in join conditions:
+
+```sql
+-- Tables
+CREATE TABLE orders (id INT, user_id INT, amount NUMERIC, created_at TIMESTAMP);
+CREATE TABLE users (id INT, email TEXT, region_id INT);
+
+-- Create indexes on join keys
+CREATE INDEX orders_user_idx ON orders(user_id);
+CREATE INDEX users_id_idx ON users(id);
+
+-- Now this join is more efficient
+CREATE MATERIALIZED VIEW order_users AS
+SELECT 
+    o.id,
+    o.amount,
+    u.email
+FROM orders o
+JOIN users u ON o.user_id = u.id;
+```
+
+Materialize maintains arrangements (indexed data structures) on join keys. When multiple queries join on the same keys, they share these arrangements.
+
+### Join ordering
+
+Materialize's query optimizer automatically selects efficient join orders, but you can influence it:
+
+```sql
+-- Manually order joins from most selective to least
+CREATE MATERIALIZED VIEW filtered_orders AS
+SELECT 
+    o.id,
+    u.email,
+    p.name
+FROM 
+    -- Start with smallest/most filtered table
+    (SELECT * FROM orders WHERE amount > 1000) o
+JOIN users u ON o.user_id = u.id
+JOIN products p ON o.product_id = p.id;
+```
+
+### Avoid Cartesian products
+
+Always specify join conditions. Accidental Cartesian products cause exponential state growth:
+
+```sql
+-- ❌ BAD: Missing join condition creates Cartesian product
+CREATE MATERIALIZED VIEW bad_join AS
+SELECT 
+    u.email,
+    o.id
+FROM users u, orders o;
+-- This returns users × orders rows!
+
+-- ✅ GOOD: Proper join condition
+CREATE MATERIALIZED VIEW good_join AS
+SELECT 
+    u.email,
+    o.id
+FROM users u
+JOIN orders o ON u.id = o.user_id;
+```
+
+## Practical example: E-commerce analytics
+
+Complete example building a multi-layer join hierarchy:
+
+```sql
+-- Layer 1: Basic enrichment
+CREATE MATERIALIZED VIEW orders_enriched AS
+SELECT 
+    o.id as order_id,
+    o.created_at,
+    o.user_id,
+    u.email,
+    u.tier,
+    u.region_id,
+    r.name as region_name,
+    r.country
+FROM orders o
+JOIN users u ON o.user_id = u.id
+JOIN regions r ON u.region_id = r.id;
+
+-- Layer 2: Line item details
+CREATE MATERIALIZED VIEW order_line_items AS
+SELECT 
+    oe.order_id,
+    oe.created_at,
+    oe.email,
+    oe.tier,
+    oe.region_name,
+    oe.country,
+    oi.id as line_item_id,
+    p.id as product_id,
+    p.name as product_name,
+    p.category,
+    oi.quantity,
+    oi.price,
+    (oi.quantity * oi.price) as line_total
+FROM orders_enriched oe
+JOIN order_items oi ON oe.order_id = oi.order_id
+JOIN products p ON oi.product_id = p.id;
+
+-- Layer 3: Aggregated metrics
+CREATE MATERIALIZED VIEW regional_product_performance AS
+SELECT 
+    region_name,
+    country,
+    category,
+    COUNT(DISTINCT order_id) as order_count,
+    SUM(quantity) as units_sold,
+    SUM(line_total) as revenue
+FROM order_line_items
+GROUP BY region_name, country, category;
+
+-- Create indexes for fast queries
+CREATE INDEX regional_perf_region_idx 
+    ON regional_product_performance(region_name);
+CREATE INDEX regional_perf_category_idx 
+    ON regional_product_performance(category);
+```
+
+Query examples:
+
+```sql
+-- Regional performance
+SELECT * FROM regional_product_performance
+WHERE region_name = 'North America'
+ORDER BY revenue DESC;
+
+-- Category comparison
+SELECT 
+    category,
+    SUM(revenue) as total_revenue,
+    SUM(units_sold) as total_units
+FROM regional_product_performance
+GROUP BY category
+ORDER BY total_revenue DESC;
+```
+
+All views update incrementally as orders, users, products, and regions change.
+
+## Related resources
+
+- [SQL: JOIN](/sql/select/join)
+- [Query Optimization](/transform/optimization)
+- [Materialized Views](/transform/materialized-views)
+- [Aggregations](/transform/aggregations)

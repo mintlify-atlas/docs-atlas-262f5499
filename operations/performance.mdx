@@ -1,0 +1,613 @@
+---
+title: Performance Tuning
+description: Optimize query performance in Materialize using EXPLAIN, indexes, and query design best practices.
+---
+
+## Overview
+
+This guide covers performance optimization strategies for Materialize, including query analysis with EXPLAIN, index design, join optimization, and troubleshooting slow queries.
+
+## Understanding Query Execution
+
+### Execution Strategies
+
+Materialize uses three execution strategies:
+
+1. **Constant**: Computed in the control plane without cluster involvement
+2. **Fast-path**: Direct read from an in-memory index
+3. **Standard**: Computed by a temporary dataflow in the cluster
+
+```sql
+-- Check execution strategy
+SELECT 
+  execution_strategy,
+  COUNT(*) AS query_count,
+  AVG(EXTRACT(EPOCH FROM (finished_at - began_at))) AS avg_duration_sec
+FROM mz_internal.mz_recent_activity_log
+WHERE statement_type = 'select'
+GROUP BY execution_strategy;
+```
+
+**Goal**: Optimize queries to use fast-path execution when possible.
+
+## Using EXPLAIN to Analyze Queries
+
+### Basic EXPLAIN Usage
+
+Analyze how a query will execute:
+
+```sql
+EXPLAIN SELECT * FROM orders WHERE customer_id = 123;
+```
+
+**Fast-path output** (optimal):
+```
+Explained Query (fast path):
+  ReadIndex on=orders idx_orders_customer=[lookup value=(123)]
+
+Used Indexes:
+  - idx_orders_customer (lookup)
+```
+
+**Standard execution output**:
+```
+Explained Query:
+  Filter (#1{customer_id} = 123)
+    ReadGlobalFromSameDataflow materialize.public.orders
+
+Used Indexes:
+  - (none)
+```
+
+### EXPLAIN Stages
+
+View different optimization stages:
+
+```sql
+-- Raw plan (closest to SQL)
+EXPLAIN RAW PLAN FOR SELECT * FROM orders WHERE customer_id = 123;
+
+-- Decorrelated plan
+EXPLAIN DECORRELATED PLAN FOR SELECT * FROM orders WHERE customer_id = 123;
+
+-- Optimized plan
+EXPLAIN OPTIMIZED PLAN FOR SELECT * FROM orders WHERE customer_id = 123;
+
+-- Physical plan (actual execution)
+EXPLAIN PHYSICAL PLAN FOR SELECT * FROM orders WHERE customer_id = 123;
+```
+
+### EXPLAIN Modifiers
+
+Get additional information:
+
+```sql
+-- Show join implementation details
+EXPLAIN OPTIMIZED PLAN WITH (join implementations) FOR
+  SELECT * FROM orders o
+  JOIN customers c ON o.customer_id = c.id;
+
+-- Show cardinality estimates
+EXPLAIN WITH (cardinality) FOR
+  SELECT * FROM orders WHERE status = 'shipped';
+
+-- Show types
+EXPLAIN WITH (types) FOR
+  SELECT customer_id, SUM(total) FROM orders GROUP BY customer_id;
+
+-- Multiple modifiers
+EXPLAIN WITH (types, arity, cardinality) FOR
+  SELECT * FROM orders;
+```
+
+### Verifying Index Usage
+
+Confirm that indexes are used:
+
+```sql
+EXPLAIN SELECT * FROM orders WHERE customer_id = 123 AND status = 'active';
+```
+
+Look for:
+- `lookup value=` indicates point lookup (fastest)
+- `(lookup)` in "Used Indexes" section
+- `(scan)` indicates full index scan (slower)
+- No index listed means full table scan (slowest)
+
+## Query Optimization Techniques
+
+### Point Lookup Optimization
+
+Design indexes to support equality-based queries:
+
+```sql
+-- Query pattern
+SELECT * FROM orders WHERE customer_id = ?;
+
+-- Create index for point lookup
+CREATE INDEX idx_orders_customer ON orders (customer_id);
+
+-- Verify with EXPLAIN
+EXPLAIN SELECT * FROM orders WHERE customer_id = 123;
+```
+
+**Point lookup requirements**:
+1. Equality conditions (`=` or `IN`) on ALL indexed fields
+2. Only `AND` to combine conditions
+3. Exact match of indexed expressions (including types)
+
+### Multi-Column Point Lookups
+
+```sql
+-- Query pattern
+SELECT * FROM orders 
+WHERE customer_id = ? AND status = ?;
+
+-- Create multi-column index
+CREATE INDEX idx_orders_customer_status 
+ON orders (customer_id, status);
+
+-- Both column orders work for point lookups
+CREATE INDEX idx_orders_status_customer 
+ON orders (status, customer_id);
+```
+
+**Note**: Column order only matters when doing partial point lookups (specifying a subset of indexed columns).
+
+### Expression Indexes
+
+Index computed expressions that appear in queries:
+
+```sql
+-- Query with expression
+SELECT * FROM orders WHERE quantity * price > 1000;
+
+-- Create expression index
+CREATE INDEX idx_orders_total ON orders (quantity * price);
+
+-- Query must match expression exactly
+SELECT * FROM orders WHERE quantity * price = 1500;  -- Uses index
+SELECT * FROM orders WHERE price * quantity = 1500;  -- Does NOT use index
+```
+
+### Handling OR Clauses
+
+**Same fields with OR**:
+```sql
+-- Query
+SELECT * FROM orders 
+WHERE customer_id = 123 OR customer_id = 456;
+
+-- Index supports this
+CREATE INDEX idx_orders_customer ON orders (customer_id);
+
+-- Alternative: use IN
+SELECT * FROM orders 
+WHERE customer_id IN (123, 456);
+```
+
+**Different fields with OR** - rewrite as UNION:
+```sql
+-- Original (slow)
+SELECT * FROM orders 
+WHERE customer_id = 123 OR status = 'urgent';
+
+-- Optimized with UNION
+SELECT * FROM orders WHERE customer_id = 123
+UNION
+SELECT * FROM orders WHERE status = 'urgent';
+
+-- Create indexes for both
+CREATE INDEX idx_orders_customer ON orders (customer_id);
+CREATE INDEX idx_orders_status ON orders (status);
+```
+
+## Join Optimization
+
+### Basic Join Indexing
+
+Index join keys on both sides:
+
+```sql
+CREATE TABLE customers (id INT, name TEXT);
+CREATE TABLE orders (id INT, customer_id INT, total DECIMAL);
+
+-- Index the join keys
+CREATE INDEX idx_customers_id ON customers (id);
+CREATE INDEX idx_orders_customer_id ON orders (customer_id);
+
+-- Now joins are fast
+SELECT c.name, o.total
+FROM customers c
+JOIN orders o ON c.id = o.customer_id;
+```
+
+### Multi-Way Joins
+
+For queries joining multiple tables:
+
+```sql
+SELECT 
+  c.name,
+  o.order_date,
+  p.product_name,
+  oi.quantity
+FROM customers c
+JOIN orders o ON c.id = o.customer_id
+JOIN order_items oi ON o.id = oi.order_id
+JOIN products p ON oi.product_id = p.id;
+
+-- Index all join keys
+CREATE INDEX idx_customers_id ON customers (id);
+CREATE INDEX idx_orders_customer ON orders (customer_id);
+CREATE INDEX idx_orders_id ON orders (id);
+CREATE INDEX idx_order_items_order ON order_items (order_id);
+CREATE INDEX idx_order_items_product ON order_items (product_id);
+CREATE INDEX idx_products_id ON products (id);
+```
+
+### Join with Filters
+
+Place filtered input first in FROM clause:
+
+```sql
+-- Less optimal
+SELECT c.name, o.total
+FROM orders o
+JOIN customers c ON o.customer_id = c.id
+WHERE c.region = 'West';
+
+-- Better - filtered table first
+SELECT c.name, o.total
+FROM customers c
+JOIN orders o ON c.id = o.customer_id
+WHERE c.region = 'West';
+
+-- Best - with appropriate indexes
+CREATE INDEX idx_customers_region ON customers (region);
+CREATE INDEX idx_customers_id ON customers (id);
+CREATE INDEX idx_orders_customer_id ON orders (customer_id);
+```
+
+### Understanding Join Strategies
+
+Use EXPLAIN to see join implementation:
+
+```sql
+EXPLAIN OPTIMIZED PLAN WITH (join implementations) FOR
+  SELECT c.name, o.total
+  FROM customers c
+  JOIN orders o ON c.id = o.customer_id;
+```
+
+**Delta join** (preferred for multi-way joins):
+```
+Join on=(#0 = #1) type=delta
+  implementation
+    %0:customers » %1:orders[#0{customer_id}]K
+    %1:orders » %0:customers[#0{id}]UK
+```
+
+**Differential join** (binary join):
+```
+Join on=(#0 = #1) type=differential
+```
+
+Look for:
+- `U` = unique key
+- `K` = key length
+- `A` = already arranged (index exists)
+
+## Materialized Views vs. Indexes
+
+### When to Use Materialized Views
+
+Use materialized views when:
+- Results need to be shared across multiple clusters
+- Query results are large and frequently accessed
+- Multiple dependent queries build on the same computation
+
+```sql
+CREATE MATERIALIZED VIEW customer_summary AS
+  SELECT 
+    customer_id,
+    COUNT(*) AS order_count,
+    SUM(total) AS lifetime_value
+  FROM orders
+  GROUP BY customer_id;
+
+-- Query from any cluster
+SET cluster = analytics;
+SELECT * FROM customer_summary WHERE customer_id = 123;
+```
+
+### When to Use Indexes
+
+Use indexes when:
+- Results are only queried from one cluster
+- You want to accelerate queries on existing views
+- Memory is available in the target cluster
+
+```sql
+CREATE VIEW active_orders AS
+  SELECT * FROM orders
+  WHERE status IN ('pending', 'processing');
+
+-- Index for fast queries within this cluster
+CREATE INDEX idx_active_orders_customer 
+ON active_orders (customer_id);
+```
+
+### Combining Both
+
+Use materialized views for shared computation, indexes for fast access:
+
+```sql
+-- Shared across clusters
+CREATE MATERIALIZED VIEW daily_metrics AS
+  SELECT 
+    DATE_TRUNC('day', created_at) AS day,
+    status,
+    COUNT(*) AS count,
+    SUM(total) AS total_amount
+  FROM orders
+  GROUP BY DATE_TRUNC('day', created_at), status;
+
+-- Fast access within serving cluster
+SET cluster = serving;
+CREATE INDEX idx_daily_metrics_day 
+ON daily_metrics (day, status);
+```
+
+## Troubleshooting Slow Queries
+
+### Diagnostic Workflow
+
+1. **Check query history**:
+```sql
+SELECT 
+  began_at,
+  finished_at - began_at AS duration,
+  execution_strategy,
+  sql
+FROM mz_internal.mz_recent_activity_log
+WHERE statement_type = 'select'
+ORDER BY duration DESC
+LIMIT 10;
+```
+
+2. **Run EXPLAIN**:
+```sql
+EXPLAIN <your slow query>;
+```
+
+3. **Check for index usage**:
+Look for "Used Indexes" section in EXPLAIN output.
+
+4. **Verify cluster has capacity**:
+```sql
+SELECT 
+  c.name,
+  ROUND(100.0 * m.memory_bytes / s.memory_bytes, 1) AS memory_pct
+FROM mz_internal.mz_cluster_replica_metrics m
+JOIN mz_cluster_replicas r ON m.replica_id = r.id
+JOIN mz_clusters c ON r.cluster_id = c.id
+JOIN mz_cluster_replica_sizes s ON r.size = s.size
+WHERE c.name = '<your cluster>';
+```
+
+### Common Issues and Solutions
+
+#### Issue: Query Not Using Index
+
+**Symptoms**: EXPLAIN shows no indexes used
+
+**Causes**:
+- Query runs in different cluster than index
+- Index keys don't match query predicates
+- Type mismatch in WHERE clause
+
+**Solutions**:
+```sql
+-- Verify cluster
+SHOW cluster;
+
+-- Check index exists
+SELECT name, cluster_id, create_sql
+FROM mz_indexes
+WHERE on_id = (SELECT id FROM mz_views WHERE name = 'your_view');
+
+-- Create index if missing
+CREATE INDEX idx_your_view_key ON your_view (key_column);
+```
+
+#### Issue: Full Index Scan Instead of Point Lookup
+
+**Symptoms**: EXPLAIN shows "(scan)" instead of "(lookup)"
+
+**Cause**: WHERE clause doesn't match point lookup criteria
+
+**Solution**: Adjust query or index to match:
+```sql
+-- Index created
+CREATE INDEX idx_orders_customer_status 
+ON orders (customer_id, status);
+
+-- Point lookup (good)
+SELECT * FROM orders 
+WHERE customer_id = 123 AND status = 'active';
+
+-- Full scan (not ideal) - missing customer_id
+SELECT * FROM orders 
+WHERE status = 'active';
+```
+
+#### Issue: High Memory Usage
+
+**Symptoms**: Cluster running out of memory
+
+**Diagnosis**:
+```sql
+SELECT 
+  object_name,
+  object_type,
+  size_gb
+FROM (
+  SELECT 
+    o.name AS object_name,
+    o.type AS object_type,
+    s.size_bytes / (1024.0^3) AS size_gb
+  FROM mz_internal.mz_storage_usage s
+  JOIN mz_objects o ON s.object_id = o.id
+  WHERE o.id IN (
+    SELECT id FROM mz_indexes 
+    UNION ALL 
+    SELECT id FROM mz_materialized_views
+  )
+) sub
+ORDER BY size_gb DESC
+LIMIT 10;
+```
+
+**Solutions**:
+- Drop unused indexes
+- Resize cluster: `ALTER CLUSTER name SET (SIZE = 'larger-size')`
+- Convert indexes to materialized views for cross-cluster sharing
+- Optimize data models to reduce memory footprint
+
+#### Issue: Lagging Materialized Views
+
+**Symptoms**: Queries wait for materialized views to catch up
+
+**Diagnosis**:
+```sql
+SELECT 
+  mv.name,
+  (mz_now() - f.write_frontier) / 1000.0 AS lag_seconds
+FROM mz_catalog.mz_cluster_replica_frontiers f
+JOIN mz_materialized_views mv ON f.object_id = mv.id
+WHERE mz_now() - f.write_frontier > 1000
+ORDER BY lag_seconds DESC;
+```
+
+**Solutions**:
+- Increase cluster size
+- Optimize materialized view queries
+- Reduce input data volume
+- Check for resource contention
+
+## Advanced Optimization
+
+### Temporal Filter Pushdown
+
+Use temporal filters to reduce data scanned:
+
+```sql
+-- Materialize pushes this filter to storage layer
+SELECT * FROM orders
+WHERE mz_now() <= created_at + INTERVAL '1 hour';
+```
+
+**Benefits**:
+- Skips old data at storage layer
+- Reduces memory usage
+- Faster query execution
+
+### Query Hints for TopK
+
+Optimize top-K queries:
+
+```sql
+-- Efficient top-K with LIMIT
+SELECT * FROM orders
+ORDER BY created_at DESC
+LIMIT 10;
+
+-- Less efficient without LIMIT
+SELECT * FROM orders
+ORDER BY created_at DESC;
+```
+
+### Avoiding Cartesian Products
+
+Always specify join conditions:
+
+```sql
+-- Bad - cartesian product
+SELECT * FROM customers, orders;
+
+-- Good - proper join
+SELECT * FROM customers c
+JOIN orders o ON c.id = o.customer_id;
+```
+
+## Performance Best Practices
+
+### Index Design
+
+1. **Start minimal**: Create indexes based on actual query patterns
+2. **Match query patterns**: Index columns used in WHERE clauses
+3. **Exact expressions**: Index expressions must match query expressions exactly
+4. **Consider cardinality**: High-cardinality columns make better index keys
+5. **Use EXPLAIN**: Always verify indexes are used as expected
+
+### Query Design
+
+1. **Filter early**: Apply filters before joins when possible
+2. **Use proper types**: Ensure WHERE clause types match column types
+3. **Avoid SELECT ***: Select only needed columns
+4. **Rewrite OR as UNION**: For different fields in OR clauses
+5. **Add LIMIT**: When full results aren't needed
+
+### Cluster Management
+
+1. **Right-size clusters**: Monitor utilization and adjust
+2. **Isolate workloads**: Use separate clusters for different workload types
+3. **Monitor lag**: Track materialized view freshness
+4. **Plan for hydration**: Account for initial and steady-state memory
+
+### Development Workflow
+
+1. **Profile first**: Identify actual bottlenecks before optimizing
+2. **Measure impact**: Compare performance before and after changes
+3. **Iterate**: Make one change at a time
+4. **Document**: Record why indexes and optimizations exist
+
+## Monitoring Query Performance
+
+### Create Monitoring Views
+
+```sql
+-- Slow query tracker
+CREATE VIEW slow_queries AS
+SELECT 
+  began_at,
+  finished_at - began_at AS duration,
+  cluster_name,
+  execution_strategy,
+  LEFT(sql, 200) AS query_preview
+FROM mz_internal.mz_recent_activity_log
+WHERE 
+  statement_type = 'select'
+  AND (finished_at - began_at) > INTERVAL '5 seconds'
+ORDER BY duration DESC;
+
+-- Query by execution strategy
+CREATE VIEW query_performance_summary AS
+SELECT 
+  execution_strategy,
+  COUNT(*) AS count,
+  AVG(EXTRACT(EPOCH FROM (finished_at - began_at))) AS avg_sec,
+  MAX(EXTRACT(EPOCH FROM (finished_at - began_at))) AS max_sec
+FROM mz_internal.mz_recent_activity_log
+WHERE 
+  statement_type = 'select'
+  AND finished_at IS NOT NULL
+GROUP BY execution_strategy;
+```
+
+## Related Topics
+
+- [Cluster Operations](/operations/clusters)
+- [Index Operations](/operations/indexes)
+- [Monitoring Guide](/operations/monitoring)

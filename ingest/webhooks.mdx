@@ -1,0 +1,598 @@
+---
+title: "Webhooks"
+description: "Ingest data into Materialize via HTTP POST requests from webhook providers"
+---
+
+Webhook sources allow external applications to push data directly into Materialize via HTTP POST requests. Each webhook source exposes a unique, publicly accessible URL that accepts JSON, text, or binary data.
+
+## Overview
+
+Webhook sources are ideal for:
+
+- **Event-driven architectures**: Receive events from third-party services (Stripe, Segment, etc.)
+- **Custom applications**: Push data from your applications without a message broker
+- **Real-time APIs**: Ingest data from REST APIs that support webhooks
+- **IoT and sensor data**: Receive telemetry from devices
+
+<Warning>
+Webhook URLs are publicly accessible. Always use the `CHECK` clause to validate requests and prevent unauthorized data injection.
+</Warning>
+
+## Quick Start
+
+### Step 1: Create a Secret
+
+Create a secret for request validation:
+
+```sql
+CREATE SECRET webhook_secret AS 'your_secret_value_here';
+```
+
+### Step 2: Create a Webhook Source
+
+```sql
+CREATE SOURCE webhook_source FROM WEBHOOK
+    BODY FORMAT JSON
+    CHECK (
+        WITH (
+            HEADERS,
+            BODY AS request_body,
+            SECRET webhook_secret AS validation_secret
+        )
+        constant_time_eq(headers->'x-api-key', validation_secret)
+    );
+```
+
+### Step 3: Get the Webhook URL
+
+```sql
+SELECT url
+FROM mz_internal.mz_webhook_sources
+WHERE name = 'webhook_source';
+```
+
+The URL format is:
+```
+https://<HOST>/api/webhook/<database>/<schema>/<source_name>
+```
+
+### Step 4: Send Test Data
+
+Using curl:
+
+```bash
+curl -X POST https://your-host.materialize.com/api/webhook/materialize/public/webhook_source \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: your_secret_value_here" \
+  -d '{"event": "test", "user_id": 123}'
+```
+
+### Step 5: Query the Data
+
+```sql
+SELECT * FROM webhook_source LIMIT 10;
+```
+
+## Supported Formats
+
+### JSON (Default)
+
+Data is stored as `jsonb`:
+
+```sql
+CREATE SOURCE webhook_json FROM WEBHOOK
+    BODY FORMAT JSON;
+```
+
+**Output schema:**
+- `body` (jsonb): The request body
+
+**Query example:**
+
+```sql
+SELECT
+    (body->>'id')::bigint AS id,
+    (body->>'event_type')::text AS event_type,
+    (body->>'timestamp')::timestamp AS timestamp
+FROM webhook_json;
+```
+
+### JSON Array
+
+Automatically expand JSON arrays into individual rows:
+
+```sql
+CREATE SOURCE webhook_json_array FROM WEBHOOK
+    BODY FORMAT JSON ARRAY;
+```
+
+Posting `[{"a": 1}, {"a": 2}, {"a": 3}]` creates 3 rows.
+
+**Also accepts:**
+- Single JSON objects (creates 1 row)
+- Newline-delimited JSON (NDJSON)
+
+### Text
+
+Data is stored as `text` (UTF-8):
+
+```sql
+CREATE SOURCE webhook_text FROM WEBHOOK
+    BODY FORMAT TEXT;
+```
+
+**Output schema:**
+- `text` (text): The request body as UTF-8 text
+
+### Bytes
+
+Raw binary data stored as `bytea`:
+
+```sql
+CREATE SOURCE webhook_bytes FROM WEBHOOK
+    BODY FORMAT BYTES;
+```
+
+**Output schema:**
+- `data` (bytea): Raw request body bytes
+
+## Request Validation
+
+<Warning>
+**Always use a CHECK statement** to validate requests. Without validation, anyone who discovers your webhook URL can inject data.
+</Warning>
+
+### Basic Authentication
+
+Simple header-based validation:
+
+```sql
+CREATE SECRET basic_auth AS 'Basic dXNlcjpwYXNzd29yZA==';
+
+CREATE SOURCE webhook_basic FROM WEBHOOK
+    BODY FORMAT JSON
+    CHECK (
+        WITH (HEADERS, SECRET basic_auth AS auth_value)
+        constant_time_eq(headers->'authorization', auth_value)
+    );
+```
+
+### HMAC Signature Validation
+
+Validate requests using HMAC signatures (common with Stripe, GitHub, etc.):
+
+```sql
+CREATE SECRET webhook_signing_key AS 'your_signing_key';
+
+CREATE SOURCE webhook_hmac FROM WEBHOOK
+    BODY FORMAT JSON
+    CHECK (
+        WITH (
+            HEADERS,
+            BODY AS request_body,
+            SECRET webhook_signing_key AS signing_key
+        )
+        constant_time_eq(
+            decode(headers->'x-signature', 'base64'),
+            hmac(request_body, signing_key, 'sha256')
+        )
+    );
+```
+
+### Custom Validation Logic
+
+Combine multiple validation checks:
+
+```sql
+CREATE SOURCE webhook_custom FROM WEBHOOK
+    BODY FORMAT JSON
+    CHECK (
+        WITH (
+            HEADERS,
+            BODY AS request_body,
+            SECRET webhook_secret AS secret_value
+        )
+        -- Check API key AND timestamp freshness
+        constant_time_eq(headers->'x-api-key', secret_value)
+        AND (headers->'x-timestamp')::bigint > extract(epoch from now()) - 300
+    );
+```
+
+<Tip>
+Use `constant_time_eq()` instead of `=` for security-sensitive comparisons to prevent timing attacks.
+</Tip>
+
+## Including Headers
+
+### Specific Headers
+
+Include individual headers as columns:
+
+```sql
+CREATE SOURCE webhook_with_headers FROM WEBHOOK
+    BODY FORMAT JSON
+    INCLUDE HEADER 'x-request-id' AS request_id,
+    INCLUDE HEADER 'x-timestamp' AS timestamp;
+```
+
+**Output schema:**
+- `body` (jsonb)
+- `request_id` (text, nullable)
+- `timestamp` (text, nullable)
+
+### All Headers
+
+Include all headers as a map:
+
+```sql
+CREATE SOURCE webhook_all_headers FROM WEBHOOK
+    BODY FORMAT JSON
+    INCLUDE HEADERS;
+```
+
+**Output schema:**
+- `body` (jsonb)
+- `headers` (map[text => text])
+
+**Query headers:**
+
+```sql
+SELECT
+    body->>'user_id' AS user_id,
+    headers->'x-request-id' AS request_id,
+    headers->'user-agent' AS user_agent
+FROM webhook_all_headers;
+```
+
+### Excluding Sensitive Headers
+
+Include all headers except sensitive ones:
+
+```sql
+CREATE SOURCE webhook_filtered_headers FROM WEBHOOK
+    BODY FORMAT JSON
+    INCLUDE HEADERS (NOT 'authorization', NOT 'x-api-key');
+```
+
+## Handling Batch Events
+
+### JSON Arrays
+
+Automatically expand arrays:
+
+```sql
+CREATE SOURCE webhook_batch FROM WEBHOOK
+    BODY FORMAT JSON ARRAY;
+```
+
+**Posting:**
+
+```bash
+curl -X POST $WEBHOOK_URL \
+  -H "Content-Type: application/json" \
+  -d '[{"event": "a"}, {"event": "b"}, {"event": "c"}]'
+```
+
+Creates 3 separate rows.
+
+### Newline-Delimited JSON (NDJSON)
+
+Use `BODY FORMAT JSON` (not JSON ARRAY):
+
+```sql
+CREATE SOURCE webhook_ndjson FROM WEBHOOK
+    BODY FORMAT JSON;
+```
+
+**Posting:**
+
+```bash
+curl -X POST $WEBHOOK_URL \
+  -H "Content-Type: application/x-ndjson" \
+  -d $'{"event": "a"}\n{"event": "b"}\n{"event": "c"}'
+```
+
+Creates 3 separate rows.
+
+## Handling Duplicates and Partial Events
+
+### Deduplication
+
+Use `DISTINCT ON` with a unique identifier:
+
+```sql
+CREATE MATERIALIZED VIEW webhook_deduplicated AS
+SELECT DISTINCT ON (body->>'event_id') *
+FROM webhook_source
+ORDER BY body->>'event_id', body->>'timestamp' DESC;
+```
+
+### Merging Partial Events
+
+Handle events that arrive in multiple parts:
+
+```sql
+-- Webhook receives partial events with the same ID
+CREATE MATERIALIZED VIEW events_merged AS
+SELECT DISTINCT ON (id) *
+FROM (
+    SELECT
+        body->>'id' AS id,
+        try_parse_monotonic_iso8601_timestamp(body->>'started_at') AS started_at,
+        try_parse_monotonic_iso8601_timestamp(body->>'finished_at') AS finished_at
+    FROM webhook_source
+)
+ORDER BY id, finished_at NULLS LAST, started_at NULLS LAST;
+```
+
+## Real-World Examples
+
+### Stripe Webhooks
+
+```sql
+CREATE SECRET stripe_webhook_secret AS 'whsec_...';
+
+CREATE SOURCE stripe_events FROM WEBHOOK
+    BODY FORMAT JSON
+    INCLUDE HEADER 'stripe-signature' AS signature
+    CHECK (
+        WITH (
+            HEADERS,
+            BODY AS request_body,
+            SECRET stripe_webhook_secret AS signing_secret
+        )
+        -- Stripe signature validation
+        -- (simplified - production should parse timestamp and signatures)
+        constant_time_eq(headers->'stripe-signature', signing_secret)
+    );
+```
+
+### Segment Events
+
+```sql
+CREATE SECRET segment_write_key AS 'your_segment_write_key';
+
+CREATE SOURCE segment_events FROM WEBHOOK
+    BODY FORMAT JSON ARRAY  -- Segment can batch events
+    CHECK (
+        WITH (
+            HEADERS,
+            SECRET segment_write_key AS write_key
+        )
+        constant_time_eq(
+            headers->'authorization',
+            'Basic ' || encode(write_key || ':', 'base64')
+        )
+    );
+```
+
+### IoT Sensor Data
+
+```sql
+CREATE SECRET iot_api_key AS 'sensor_fleet_key_123';
+
+CREATE SOURCE sensor_readings FROM WEBHOOK
+    BODY FORMAT JSON
+    INCLUDE HEADER 'x-device-id' AS device_id,
+    INCLUDE HEADER 'x-timestamp' AS reading_timestamp
+    CHECK (
+        WITH (
+            HEADERS,
+            SECRET iot_api_key AS api_key
+        )
+        constant_time_eq(headers->'x-api-key', api_key)
+    );
+
+CREATE VIEW sensor_data_parsed AS
+SELECT
+    device_id,
+    (body->>'temperature')::numeric AS temperature,
+    (body->>'humidity')::numeric AS humidity,
+    (body->>'pressure')::numeric AS pressure,
+    try_parse_monotonic_iso8601_timestamp(reading_timestamp) AS timestamp
+FROM sensor_readings;
+```
+
+### GitHub Webhooks
+
+```sql
+CREATE SECRET github_webhook_secret AS 'your_github_secret';
+
+CREATE SOURCE github_events FROM WEBHOOK
+    BODY FORMAT JSON
+    INCLUDE HEADER 'x-github-event' AS event_type,
+    INCLUDE HEADER 'x-github-delivery' AS delivery_id
+    CHECK (
+        WITH (
+            HEADERS,
+            BODY AS request_body,
+            SECRET github_webhook_secret AS secret
+        )
+        constant_time_eq(
+            decode(substring(headers->'x-hub-signature-256' from 8), 'hex'),
+            hmac(request_body, secret, 'sha256')
+        )
+    );
+```
+
+## Debugging Validation
+
+To debug `CHECK` statement issues:
+
+### 1. Create a Debug Source Without Validation
+
+```sql
+CREATE SOURCE webhook_debug FROM WEBHOOK
+    BODY FORMAT TEXT
+    INCLUDE HEADERS;
+```
+
+### 2. Send Test Requests
+
+Send sample requests to the debug source URL.
+
+### 3. Inspect the Data
+
+```sql
+SELECT
+    text AS body,
+    headers
+FROM webhook_debug
+LIMIT 10;
+```
+
+### 4. Test Your Validation Logic
+
+```sql
+SELECT
+    -- Your would-be CHECK expression
+    constant_time_eq(
+        decode(headers->'x-signature', 'base64'),
+        hmac(text, 'test_key', 'sha256')
+    ) AS is_valid
+FROM webhook_debug;
+```
+
+<Note>
+Secrets cannot be used in SELECT statements, so substitute with literal strings for debugging.
+</Note>
+
+### 5. Update the Production Source
+
+Once validation works, update your production source with the correct `CHECK` clause.
+
+## Request Limits
+
+Webhook sources have the following limits:
+
+| Limit | Value |
+|-------|-------|
+| **Max request body size** | 2 MB |
+| **Max concurrent requests** (across all webhook sources) | 500 req/sec |
+| **Response for oversized requests** | `413 Payload Too Large` |
+| **Response when at capacity** | `429 Too Many Requests` |
+
+<Warning>
+Requests with duplicate header names will be rejected with `401 Unauthorized`.
+</Warning>
+
+## Monitoring
+
+### Check Source Status
+
+```sql
+SELECT *
+FROM mz_internal.mz_source_statuses
+WHERE name = 'webhook_source';
+```
+
+### Monitor Ingestion Rate
+
+```sql
+SELECT
+    name,
+    messages_received,
+    bytes_received
+FROM mz_internal.mz_source_statistics s
+JOIN mz_sources src ON s.id = src.id
+WHERE src.name = 'webhook_source';
+```
+
+### Track Request Failures
+
+Monitor your application logs for HTTP error responses:
+
+- `400 Bad Request`: Invalid JSON or format
+- `401 Unauthorized`: Validation failed or duplicate headers
+- `413 Payload Too Large`: Request body > 2 MB
+- `429 Too Many Requests`: Rate limit exceeded
+
+## Troubleshooting
+
+### Requests Being Rejected
+
+**Check validation logic:**
+
+1. Create a debug source without `CHECK`
+2. Send a request
+3. Inspect headers and body format
+4. Test validation expression in a SELECT query
+
+**Common issues:**
+
+- Header name case sensitivity (headers are lowercase)
+- Base64 encoding/decoding mismatches
+- HMAC algorithm mismatches (sha256 vs sha512)
+- Timestamp validation too strict
+
+### Invalid JSON Errors
+
+If you receive `400 Bad Request` for JSON sources:
+
+- Verify the request has `Content-Type: application/json`
+- Check that the JSON is well-formed
+- Try using `BODY FORMAT TEXT` temporarily to see the raw data
+
+### Rate Limiting
+
+If you hit the 500 req/sec limit:
+
+1. **Batch events** using JSON arrays or NDJSON
+2. **Buffer events** in your application before sending
+3. **Contact support** if you need higher limits
+
+### No Data Appearing
+
+**Checklist:**
+
+1. Verify webhook URL is correct
+2. Check that requests are returning `200 OK`
+3. Verify validation (CHECK clause) is passing
+4. Query the source to check for data:
+
+```sql
+SELECT COUNT(*) FROM webhook_source;
+```
+
+5. Check source status for errors:
+
+```sql
+SELECT error
+FROM mz_internal.mz_source_statuses
+WHERE name = 'webhook_source';
+```
+
+## Best Practices
+
+### Security
+
+- **Always use validation**: Never create a webhook source without a `CHECK` clause in production
+- **Rotate secrets regularly**: Update webhook secrets periodically
+- **Use HMAC validation**: Prefer HMAC over simple API key validation
+- **Validate timestamps**: Prevent replay attacks by checking request age
+- **Use HTTPS only**: Webhook URLs are HTTPS by default
+
+### Performance
+
+- **Batch events**: Send multiple events in a single request when possible
+- **Use appropriate formats**: JSON is more flexible, but BYTES/TEXT can be faster
+- **Create parsing views**: Don't parse JSON in every query
+- **Monitor resource usage**: Webhook sources count against cluster resources
+
+### Reliability
+
+- **Handle retries**: Design your application to retry failed requests
+- **Implement idempotency**: Use unique IDs to deduplicate events
+- **Monitor failure rates**: Track 4xx/5xx responses
+- **Set up alerting**: Get notified if webhook ingestion stops
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Transform Data" icon="wand-magic-sparkles" href="/transform">
+    Create materialized views on your webhook data
+  </Card>
+  <Card title="Kafka Ingestion" icon="stream" href="/ingest/kafka">
+    Learn about ingesting data from Kafka topics
+  </Card>
+</CardGroup>

@@ -1,0 +1,278 @@
+---
+title: "Introduction to Materialize"
+description: "Learn what Materialize is, its key use cases, and how it provides real-time data integration with strong consistency guarantees."
+---
+
+## What is Materialize?
+
+Materialize is a **real-time data integration platform** that creates and continually updates consistent views of transactional data from across your organization. Its SQL interface democratizes the ability to serve and access live data, and it can be deployed anywhere your infrastructure runs.
+
+Unlike traditional databases that force you to choose between freshness, cost, and SQL complexity, Materialize provides **always-fresh results** with **strong consistency guarantees** — even when performing complex operations like multi-way joins with aggregations.
+
+<Note>
+Materialize focuses on providing correct and consistent answers with minimal latency, without asking you to accept either approximate answers or eventual consistency. This guarantee holds even when joining data from multiple upstream systems.
+</Note>
+
+## Key Use Cases
+
+The three most common patterns for adopting Materialize are:
+
+<CardGroup cols={3}>
+  <Card title="Query Offload (CQRS)" icon="database">
+    Scale complex read queries more efficiently than a read replica, without the headaches of cache invalidation. Materialize maintains incrementally updated views that always reflect the current state of your data.
+  </Card>
+  
+  <Card title="Integration Hub (ODS)" icon="rotate">
+    Extract, load, and incrementally transform data from multiple sources. Create live views of your data that can be queried directly or pushed downstream to other systems.
+  </Card>
+  
+  <Card title="Operational Data Mesh (ODM)" icon="network-wired">
+    Use SQL to create and deliver real-time, strongly consistent data products to streamline coordination across services and domains.
+  </Card>
+</CardGroup>
+
+### Common Applications
+
+Materialize excels at:
+
+- **Fresh context for AI/RAG pipelines** — Provide up-to-date context for AI applications without stale data
+- **Operational dashboards** — Power live dashboards with real-time metrics and KPIs
+- **Dynamic customer experiences** — Create personalized, real-time experiences without custom data pipelines
+- **Real-time analytics** — Run complex analytical queries on streaming data
+- **Event-driven applications** — Build reactive systems that respond instantly to data changes
+
+## How Materialize Works
+
+### Streaming SQL Engine
+
+Materialize recasts your SQL queries as **dataflows** that can react efficiently to changes in your data as they happen. The engine is built on [Timely Dataflow](https://github.com/TimelyDataflow/timely-dataflow) and [Differential Dataflow](https://github.com/timelydataflow/differential-dataflow) — data processing frameworks backed by years of research and optimized for incremental computation.
+
+### Incremental Updates
+
+When new data arrives, Materialize doesn't recompute results from scratch. Instead, it performs **incremental updates** — calculating only what has changed and updating results accordingly. This makes reads computationally free while ensuring results are always up-to-date.
+
+```mzsql
+-- Create a view that's automatically maintained
+CREATE MATERIALIZED VIEW revenue_by_region AS
+SELECT 
+  region,
+  SUM(order_total) AS total_revenue,
+  COUNT(*) AS order_count
+FROM orders
+GROUP BY region;
+
+-- Results are always fresh, reads are instant
+SELECT * FROM revenue_by_region;
+```
+
+### Strong Consistency
+
+Materialize provides [strict serializability](https://jepsen.io/consistency/models/strict-serializable) by default — the highest level of transaction isolation. Whenever Materialize answers a query, that answer is the correct result on a specific (and recent) version of your data, even when joining data from multiple upstream systems.
+
+<Warning>
+This guarantee eliminates common pitfalls like eventual consistency and dual writes that can affect the correctness of your results in other systems.
+</Warning>
+
+## Architecture Overview
+
+### Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     External Systems                         │
+│  PostgreSQL  │  MySQL  │  Kafka  │  Webhooks  │  More...    │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+                   ┌───────────────┐
+                   │    Sources    │  ◄─── Read data from external systems
+                   └───────┬───────┘
+                           │
+                           ▼
+                   ┌───────────────┐
+                   │  Views/MVs    │  ◄─── Transform data with SQL
+                   │   + Indexes   │       Incrementally maintained
+                   └───────┬───────┘
+                           │
+                           ▼
+                   ┌───────────────┐
+                   │   Queries     │  ◄─── Fast reads (computationally free)
+                   │     &         │       via PostgreSQL protocol
+                   │ Subscriptions │
+                   └───────┬───────┘
+                           │
+                           ▼
+                   ┌───────────────┐
+                   │     Sinks     │  ◄─── Push results downstream
+                   └───────────────┘
+```
+
+### Core Components
+
+<Steps>
+  <Step title="Sources">
+    Sources describe external systems from which Materialize reads data. They handle the connection details, data formats, and provide structured access to streaming data.
+    
+    Materialize supports:
+    - PostgreSQL and MySQL (via CDC)
+    - Kafka and Redpanda
+    - SQL Server (via CDC)
+    - Webhooks for SaaS applications
+    - Load generators for testing
+  </Step>
+  
+  <Step title="Views and Materialized Views">
+    Views save SQL queries under a name for reference. In Materialize:
+    
+    - **Views** can be indexed to maintain results in memory within a cluster
+    - **Materialized Views** persist results in durable storage and are available across clusters
+    - Both support incremental updates as new data arrives
+  </Step>
+  
+  <Step title="Indexes">
+    Indexes represent query results stored in memory within a cluster. They make up-to-date results immediately available for fast, computationally-free queries.
+    
+    Indexes perform incremental updates rather than recalculating from scratch, enabling:
+    - Sub-millisecond query latency
+    - Efficient point lookups
+    - Optimized join operations
+  </Step>
+  
+  <Step title="Clusters">
+    Clusters are isolated pools of compute resources (CPU, memory, scratch disk) for running workloads. They provide resource isolation and fault tolerance.
+    
+    Different workloads should run on separate clusters:
+    - Source ingestion clusters
+    - Transformation/compute clusters  
+    - Query serving clusters
+  </Step>
+</Steps>
+
+## Cloud-Native Features
+
+Materialize's fully managed service provides:
+
+- **High availability** through multi-active replication
+- **Horizontal scalability** by seamlessly scaling dataflows across multiple machines
+- **Near-infinite storage** by leveraging cloud object storage (e.g., Amazon S3)
+- **Credit-based pricing** for predictable costs
+
+You can also self-manage Materialize using the Enterprise or Community editions. The Community edition is **free forever** for deployments using less than 24 GiB of memory and 48 GiB of disk.
+
+## SQL Compatibility
+
+Materialize speaks PostgreSQL — both the SQL dialect and the wire protocol. This means:
+
+<CardGroup cols={2}>
+  <Card title="Use Existing Tools" icon="tools">
+    Connect with any PostgreSQL-compatible client, BI tool, or application. Your existing tools work out of the box.
+  </Card>
+  
+  <Card title="Familiar SQL" icon="code">
+    Write standard SQL with comprehensive support for:
+    - All join types (inner, outer, cross, lateral)
+    - Aggregations and window functions
+    - Subqueries and CTEs (including recursive CTEs)
+    - JSON operators and functions
+    - Delta joins for efficient multi-way joins
+  </Card>
+</CardGroup>
+
+## Example: TPC-H Query
+
+Here's an example of a complex analytical query that works in Materialize with incremental maintenance:
+
+```mzsql
+-- Create a source from sample data
+CREATE SOURCE tpch
+  FROM LOAD GENERATOR TPCH (SCALE FACTOR 1)
+  FOR ALL TABLES;
+
+-- Define a reusable view
+CREATE VIEW revenue (supplier_no, total_revenue) AS
+  SELECT
+    l_suppkey,
+    SUM(l_extendedprice * (1 - l_discount))
+  FROM lineitem
+  WHERE
+    l_shipdate >= DATE '1996-01-01'
+    AND l_shipdate < DATE '1996-01-01' + INTERVAL '3' month
+  GROUP BY l_suppkey;
+
+-- Create a materialized view that's incrementally maintained
+CREATE MATERIALIZED VIEW tpch_q15 AS
+  SELECT
+    s_suppkey,
+    s_name,
+    s_address,
+    s_phone,
+    total_revenue
+  FROM supplier, revenue
+  WHERE
+    s_suppkey = supplier_no
+    AND total_revenue = (
+      SELECT max(total_revenue)
+      FROM revenue
+    )
+  ORDER BY s_suppkey;
+
+-- Create an index for fast point lookups
+CREATE INDEX tpch_q15_idx ON tpch_q15 (s_suppkey);
+
+-- Query results are instant and always up-to-date
+SELECT * FROM tpch_q15;
+```
+
+As inserts, updates, and deletes stream to the underlying tables, Materialize incrementally updates the materialized view. You can query it anytime and expect to see current results immediately.
+
+## Getting Data In and Out
+
+### Pull-Based Access
+
+Use any PostgreSQL-compatible driver to make `SELECT` queries against your views. Point services and BI tools directly at Materialize — they don't need to know they're not talking to a regular PostgreSQL database.
+
+### Push-Based Access
+
+Listen to changes directly using `SUBSCRIBE` or configure Materialize to stream results to a Kafka topic as soon as views change. You can also copy updates to object storage.
+
+```mzsql
+-- Subscribe to see changes as they happen
+SUBSCRIBE TO (
+  SELECT * FROM revenue_by_region
+);
+```
+
+## Deployment Options
+
+<CardGroup cols={2}>
+  <Card title="Materialize Cloud" icon="cloud">
+    Fully managed service with enterprise features like high availability, horizontal scalability, and a web management console.
+    
+    [Sign up for free trial →](https://materialize.com/register/)
+  </Card>
+  
+  <Card title="Self-Managed" icon="server">
+    Deploy the Community or Enterprise edition on your own infrastructure.
+    
+    [Download now →](https://materialize.com/download/)
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get hands-on with a complete working example in minutes
+  </Card>
+  
+  <Card title="Key Concepts" icon="book" href="/key-concepts">
+    Deep dive into sources, views, indexes, and clusters
+  </Card>
+</CardGroup>
+
+## Learn More
+
+- [Official Documentation](https://materialize.com/docs/)
+- [GitHub Repository](https://github.com/MaterializeInc/materialize)
+- [Join the Community Slack](https://materialize.com/s/chat)
+- [Schedule a Demo](https://materialize.com/demo/)

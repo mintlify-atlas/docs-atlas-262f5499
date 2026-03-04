@@ -1,80 +1,497 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Quickstart Guide"
+description: "Get started with Materialize in minutes. Learn how to ingest data, create views, and query real-time results with this hands-on tutorial."
 ---
 
-## Get started in three steps
+## Overview
 
-Get your documentation site running locally and make your first customization.
+This quickstart will walk you through the basics of Materialize using a real-time auction dataset. You'll learn how to:
 
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+- Connect to Materialize and create a schema
+- Ingest streaming data from a source
+- Create views to transform data
+- Use indexes to maintain incrementally updated results
+- Subscribe to live data changes
+- Verify strong consistency guarantees
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+This tutorial uses sample auction data that continuously generates at 1-second intervals to simulate a real-time workload.
 </Note>
+
+## Prerequisites
+
+To follow this quickstart, you'll need:
+
+<Steps>
+  <Step title="Materialize Account">
+    Sign up for a free Materialize Cloud account at [materialize.com/register](https://materialize.com/register/).
+    
+    **Alternatives:**
+    - [Download the Materialize Emulator](https://materialize.com/docs/get-started/install-materialize-emulator/) for local testing
+    - Use your own self-managed Materialize deployment
+  </Step>
+  
+  <Step title="SQL Client">
+    Access the SQL Shell in the Materialize Console (web UI), or use any PostgreSQL-compatible client like `psql`.
+  </Step>
+</Steps>
+
+## Step 1: Open the SQL Shell
+
+<Tabs>
+  <Tab title="Materialize Cloud">
+    1. Navigate to the [Materialize Console](https://console.materialize.com/)
+    2. Sign in to your account
+    3. Click **SQL Shell** in the left-hand menu
+    
+    By default, you're connected to the `quickstart` cluster in the `materialize.public` namespace.
+  </Tab>
+  
+  <Tab title="Emulator">
+    If using the Materialize Emulator:
+    
+    1. Start the emulator
+    2. Open your browser to [http://localhost:6874](http://localhost:6874)
+    3. Access the SQL Shell from the console
+  </Tab>
+  
+  <Tab title="psql Client">
+    Connect using `psql` with your Materialize connection string:
+    
+    ```bash
+    psql "postgres://user@host:6875/materialize?sslmode=require"
+    ```
+  </Tab>
+</Tabs>
+
+## Step 2: Create a Schema
+
+Create a dedicated schema for this quickstart to keep your work organized.
+
+```mzsql
+CREATE SCHEMA auction_demo;
+```
+
+Switch to the new schema:
+
+```mzsql
+SET search_path = auction_demo;
+```
+
+<Note>
+**Namespace in Materialize:**
+- **Database**: `materialize` (default)
+- **Schema**: `auction_demo` (just created)
+- **Cluster**: `quickstart` (default compute cluster)
+</Note>
+
+## Step 3: Create a Source
+
+[Sources](/key-concepts#sources) are external systems from which Materialize reads data. For this tutorial, we'll use Materialize's built-in auction data generator.
+
+```mzsql
+CREATE SOURCE auction_house
+  FROM LOAD GENERATOR AUCTION
+  (TICK INTERVAL '1s', AS OF 100000)
+  FOR ALL TABLES;
+```
+
+This creates a source that:
+- Generates auction data every 1 second
+- Creates multiple subsources (tables) for different entities
+- Starts from auction ID 100000
+
+### View the Created Sources
+
+Check what was created:
+
+```mzsql
+SHOW SOURCES;
+```
+
+You should see:
+
+```
+name                   | type           | cluster    
+---------------------- | -------------- | ----------
+accounts               | subsource      | quickstart
+auction_house          | load-generator | quickstart
+auction_house_progress | progress       | null
+auctions               | subsource      | quickstart
+bids                   | subsource      | quickstart
+organizations          | subsource      | quickstart
+users                  | subsource      | quickstart
+```
+
+### Explore the Data
+
+Let's look at the structure of the data:
+
+<CodeGroup>
+```mzsql Auctions Table
+SELECT * FROM auctions LIMIT 3;
+```
+
+```mzsql Bids Table
+SELECT * FROM bids LIMIT 3;
+```
+
+```mzsql Join Auctions and Bids
+SELECT 
+  a.id AS auction_id,
+  a.item,
+  a.seller,
+  a.end_time,
+  b.buyer,
+  b.amount,
+  b.bid_time
+FROM auctions AS a
+JOIN bids AS b ON a.id = b.auction_id
+LIMIT 5;
+```
+</CodeGroup>
+
+<Accordion title="Sample Output">
+Auctions:
+```
+id    | seller | item               | end_time
+------+--------+--------------------+---------------------------
+29550 | 2468   | Best Pizza in Town | 2024-07-25 18:24:25.805+00
+29551 | 1821   | Vintage Record     | 2024-07-25 18:25:10.432+00
+29552 | 3102   | Signed Memorabilia | 2024-07-25 18:26:05.198+00
+```
+
+Bids:
+```
+id     | buyer | auction_id | amount | bid_time
+-------+-------+------------+--------+---------------------------
+295641 | 737   | 29564      | 72     | 2024-07-25 18:25:42.911+00
+295642 | 1203  | 29564      | 85     | 2024-07-25 18:25:48.324+00
+295643 | 451   | 29565      | 42     | 2024-07-25 18:25:50.667+00
+```
+</Accordion>
+
+## Step 4: Create a View to Find Winning Bids
+
+A [view](/key-concepts#views) saves a query under a name. Let's create a view to find winning bids for completed auctions.
+
+```mzsql
+CREATE VIEW winning_bids AS
+SELECT DISTINCT ON (a.id) 
+  b.*,
+  a.item,
+  a.seller
+FROM auctions AS a
+JOIN bids AS b ON a.id = b.auction_id
+WHERE 
+  b.bid_time < a.end_time          -- Bid placed before auction ended
+  AND mz_now() >= a.end_time        -- Auction has completed
+ORDER BY 
+  a.id,
+  b.amount DESC,                    -- Highest bid wins
+  b.bid_time,
+  b.buyer;
+```
+
+<Note>
+This view uses Materialize's idiomatic `DISTINCT ON` clause for [Top-K queries](https://materialize.com/docs/transform-data/idiomatic-materialize-sql/top-k/), which efficiently finds the highest bid per auction.
+</Note>
+
+### Query the View
+
+Now query the view to see winning bids:
+
+```mzsql
+SELECT * FROM winning_bids
+ORDER BY bid_time DESC
+LIMIT 10;
+```
+
+Filter by a specific item:
+
+```mzsql
+SELECT * FROM winning_bids
+WHERE item = 'Best Pizza in Town'
+ORDER BY bid_time DESC
+LIMIT 10;
+```
+
+<Warning>
+Each time you query the view, Materialize recomputes the results from scratch. As data grows, this becomes slower. Let's fix that with an index.
+</Warning>
+
+## Step 5: Create an Index for Fast Queries
+
+[Indexes](/key-concepts#indexes) store query results in memory and incrementally update them as new data arrives.
+
+```mzsql
+CREATE INDEX wins_by_item ON winning_bids (item);
+```
+
+What happens when you create this index:
+
+1. The `winning_bids` query is executed
+2. Results are stored in memory in the cluster
+3. As new auctions/bids arrive, results are **incrementally updated**
+4. Queries read from memory — making them fast and computationally free
+
+### Test the Performance
+
+Run the same queries again:
+
+```mzsql
+SELECT * FROM winning_bids
+WHERE item = 'Best Pizza in Town'
+ORDER BY bid_time DESC
+LIMIT 10;
+```
+
+Notice the query is faster because it reads from the index in memory instead of recomputing results.
+
+<Note>
+The index also enables efficient **point lookups** and **delta joins** on the `item` column.
+</Note>
+
+## Step 6: Find Auction Flippers in Real-Time
+
+Let's build something more complex: detecting "auction flippers" — users who buy items and resell them at a higher price within 8 days.
+
+### Create Flip Activities View
+
+```mzsql
+CREATE VIEW flip_activities AS
+SELECT 
+  w2.seller AS flipper_id,
+  w2.item,
+  w2.amount AS sold_amount,
+  w1.amount AS purchased_amount,
+  w2.amount - w1.amount AS profit,
+  datediff('days', w2.bid_time, w1.bid_time) AS days_between
+FROM winning_bids AS w1
+JOIN winning_bids AS w2
+  ON w1.buyer = w2.seller          -- Same person bought and sold
+  AND w1.item = w2.item            -- Same item
+WHERE 
+  w2.amount > w1.amount            -- Sold at higher price
+  AND datediff('days', w2.bid_time, w1.bid_time) < 8;  -- Within 8 days
+```
+
+View flip activities:
+
+```mzsql
+SELECT * FROM flip_activities
+ORDER BY profit DESC
+LIMIT 10;
+```
+
+### Create a Table for Known Flippers
+
+Sometimes you have external data about known flippers. Let's create a table for that:
+
+```mzsql
+CREATE TABLE known_flippers (
+  flipper_id BIGINT
+);
+```
+
+### Combine Into a Flippers View
+
+Create a view that flags users as flippers if they either:
+- Have 2+ flip activities, OR
+- Are in the `known_flippers` table
+
+```mzsql
+CREATE VIEW flippers AS
+SELECT flipper_id
+FROM (
+  -- Users with multiple flip activities
+  SELECT flipper_id
+  FROM flip_activities
+  GROUP BY flipper_id
+  HAVING COUNT(*) >= 2
+  
+  UNION ALL
+  
+  -- Manually added known flippers
+  SELECT flipper_id
+  FROM known_flippers
+);
+```
+
+## Step 7: Subscribe to Live Changes
+
+Materialize's `SUBSCRIBE` command lets you see results as they change in real-time.
+
+```mzsql
+SUBSCRIBE TO (
+  SELECT * FROM flippers
+) WITH (snapshot = false);
+```
+
+The `snapshot = false` option means you'll only see **new flippers** that appear after starting the subscription.
+
+### Add a Manual Flipper
+
+In another session (or stop the subscription), insert a known flipper:
+
+```mzsql
+INSERT INTO known_flippers VALUES (450);
+```
+
+The subscription immediately shows this new flipper.
+
+<Note>
+You'll also see flippers detected from auction activity. Due to the randomness of generated data, this might take a moment.
+</Note>
+
+Stop the subscription by clicking **Stop streaming** or pressing `Ctrl+C`.
+
+## Step 8: Verify Strong Consistency
+
+Let's verify that Materialize maintains consistency even with continuous data changes.
+
+Create views to track credits (sellers) and debits (buyers):
+
+```mzsql
+-- Track seller credits
+CREATE VIEW seller_credits AS
+SELECT 
+  seller,
+  SUM(amount) AS credits
+FROM winning_bids
+GROUP BY seller;
+
+-- Track buyer debits
+CREATE VIEW buyer_debits AS
+SELECT 
+  buyer,
+  SUM(amount) AS debits
+FROM winning_bids
+GROUP BY buyer;
+
+-- Verify totals match (should always be 0 difference)
+CREATE VIEW funds_movement AS
+SELECT 
+  SUM(credits) AS total_credits,
+  SUM(debits) AS total_debits,
+  SUM(credits) - SUM(debits) AS difference
+FROM (
+  SELECT SUM(credits) AS credits, 0 AS debits
+  FROM seller_credits
+  
+  UNION
+  
+  SELECT 0 AS credits, SUM(debits) AS debits
+  FROM buyer_debits
+);
+```
+
+### Watch Consistency in Real-Time
+
+Subscribe to see the totals change:
+
+```mzsql
+SUBSCRIBE TO (
+  SELECT * FROM funds_movement
+);
+```
+
+Toggle **Show diffs** in the console to see changes. As new auctions complete:
+- `total_credits` and `total_debits` will increase
+- **`difference` will always remain 0** — proving strong consistency
+
+<Check>
+This demonstrates Materialize's strict serializability guarantee: credits and debits are always consistent, even as thousands of auctions and bids stream through the system.
+</Check>
+
+## Step 9: Clean Up
+
+When you're done with the quickstart:
+
+```mzsql
+-- Drop the source and all dependent objects
+DROP SOURCE auction_house CASCADE;
+
+-- Drop the table
+DROP TABLE known_flippers;
+
+-- Drop the schema
+DROP SCHEMA auction_demo CASCADE;
+```
+
+## Summary
+
+In this quickstart, you learned:
+
+<CardGroup cols={2}>
+  <Card title="Sources" icon="download">
+    How to ingest streaming data from external systems
+  </Card>
+  
+  <Card title="Views" icon="eye">
+    How to transform data using SQL views
+  </Card>
+  
+  <Card title="Indexes" icon="bolt">
+    How indexes provide fast, always-fresh query results through incremental updates
+  </Card>
+  
+  <Card title="Consistency" icon="check">
+    How Materialize guarantees strong consistency across all queries
+  </Card>
+</CardGroup>
+
+### Key Takeaways
+
+1. **Incremental Updates**: Indexes and materialized views incrementally update results instead of recomputing from scratch
+2. **Computationally Free Reads**: Because work is performed on writes, reads from indexed views are instant and free
+3. **Strong Consistency**: Materialize provides strict serializability — results are always correct and consistent
+4. **Real-Time Subscriptions**: Use `SUBSCRIBE` to watch data change as it happens
+
+### Indexed Views vs. Materialized Views
+
+When should you use each?
+
+| Use Case | Recommended Approach |
+|----------|---------------------|
+| Results needed only in one cluster | Indexed view |
+| Results shared across multiple clusters | Materialized view |
+| Final output for `SUBSCRIBE` consumers | Materialized view |
+| Fast point lookups within a cluster | Indexed view |
+| Intermediate transformations | View (no index or materialization) |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Key Concepts" icon="book" href="/key-concepts">
+    Deep dive into sources, views, indexes, clusters, and sinks
+  </Card>
+  
+  <Card title="Connect Your Data" icon="plug">
+    Learn how to ingest data from PostgreSQL, MySQL, Kafka, and more
+  </Card>
+  
+  <Card title="Optimization Guide" icon="gauge">
+    Learn best practices for optimizing query performance
+  </Card>
+  
+  <Card title="dbt Integration" icon="code">
+    Use dbt Core to manage your Materialize transformations
+  </Card>
+</CardGroup>
+
+## Get Help
+
+<CardGroup cols={3}>
+  <Card title="Documentation" icon="book" href="https://materialize.com/docs/">
+    Complete reference documentation
+  </Card>
+  
+  <Card title="Community Slack" icon="slack" href="https://materialize.com/s/chat">
+    Ask questions and get help
+  </Card>
+  
+  <Card title="Schedule Demo" icon="calendar" href="https://materialize.com/demo/">
+    Get personalized guidance
+  </Card>
+</CardGroup>

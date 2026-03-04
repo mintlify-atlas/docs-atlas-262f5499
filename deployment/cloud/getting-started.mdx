@@ -1,0 +1,284 @@
+---
+title: "Getting Started with Materialize Cloud"
+description: "Sign up and create your first Materialize environment in minutes."
+---
+
+## Prerequisites
+
+Before you begin, ensure you have:
+
+- A valid email address for account creation
+- A web browser (Chrome, Firefox, Safari, or Edge)
+- A PostgreSQL client (e.g., `psql`) for connecting to your environment
+
+## Step 1: Sign Up for Materialize Cloud
+
+1. Visit [Materialize Cloud Console](https://console.materialize.com)
+2. Click **Sign Up** to create a new account
+3. Complete the registration form:
+   - Enter your email address
+   - Create a secure password
+   - Provide your organization name
+4. Verify your email address by clicking the link sent to your inbox
+
+### Single Sign-On (SSO)
+
+For enterprise customers, Materialize supports SSO integration with:
+
+- Okta
+- Google Workspace
+- Azure AD
+- Custom SAML 2.0 providers
+
+Contact your Materialize account team to enable SSO for your organization.
+
+## Step 2: Create Your First Environment
+
+Once logged in to the Materialize Console:
+
+1. Click **Create Environment** in the dashboard
+2. Configure your environment:
+   - **Environment name**: Choose a descriptive name (e.g., "production", "staging")
+   - **Region**: Select the geographic region closest to your data sources
+   - **Version**: Select the Materialize version (latest recommended)
+3. Click **Create** to provision your environment
+
+The provisioning process typically takes 2-3 minutes. You'll see a progress indicator while the environment is being created.
+
+## Step 3: Connect to Your Environment
+
+### Get Connection Details
+
+Once your environment is ready:
+
+1. Navigate to your environment in the Console
+2. Click **Connect** to view connection details
+3. Note the following information:
+   - **SQL endpoint**: `<environment-id>.materialize.cloud:6875`
+   - **HTTP endpoint**: `https://<environment-id>.materialize.cloud`
+   - **Username**: Your Materialize account email
+   - **Password**: Your account password or app-specific password
+
+### Connect Using psql
+
+Use the standard PostgreSQL client to connect:
+
+```bash
+psql "postgres://<username>:<password>@<environment-id>.materialize.cloud:6875/materialize?sslmode=require"
+```
+
+Replace:
+- `<username>`: Your Materialize account email
+- `<password>`: Your account password (URL-encoded if it contains special characters)
+- `<environment-id>`: Your environment's unique identifier
+
+Example:
+
+```bash
+psql "postgres://user%40example.com:mypassword@12345678-abcd-1234-abcd-123456789012.materialize.cloud:6875/materialize?sslmode=require"
+```
+
+### Connect Using Application Code
+
+Materialize works with any PostgreSQL-compatible driver.
+
+<CodeGroup>
+
+```python Python
+import psycopg2
+
+conn = psycopg2.connect(
+    host="<environment-id>.materialize.cloud",
+    port=6875,
+    user="<username>",
+    password="<password>",
+    database="materialize",
+    sslmode="require"
+)
+
+cur = conn.cursor()
+cur.execute("SELECT mz_version()")
+print(cur.fetchone())
+```
+
+```javascript Node.js
+const { Client } = require('pg');
+
+const client = new Client({
+  host: '<environment-id>.materialize.cloud',
+  port: 6875,
+  user: '<username>',
+  password: '<password>',
+  database: 'materialize',
+  ssl: { rejectUnauthorized: true }
+});
+
+await client.connect();
+const res = await client.query('SELECT mz_version()');
+console.log(res.rows[0]);
+```
+
+```go Go
+import (
+    "database/sql"
+    _ "github.com/lib/pq"
+)
+
+connStr := "postgres://<username>:<password>@<environment-id>.materialize.cloud:6875/materialize?sslmode=require"
+db, err := sql.Open("postgres", connStr)
+if err != nil {
+    log.Fatal(err)
+}
+
+var version string
+err = db.QueryRow("SELECT mz_version()").Scan(&version)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(version)
+```
+
+```java Java
+import java.sql.*;
+
+String url = "jdbc:postgresql://<environment-id>.materialize.cloud:6875/materialize?sslmode=require";
+Connection conn = DriverManager.getConnection(url, "<username>", "<password>");
+
+Statement stmt = conn.createStatement();
+ResultSet rs = stmt.executeQuery("SELECT mz_version()");
+if (rs.next()) {
+    System.out.println(rs.getString(1));
+}
+```
+
+</CodeGroup>
+
+## Step 4: Create Your First Cluster
+
+Clusters provide the compute resources for running queries and maintaining materialized views.
+
+```sql
+-- Create a cluster with 2 replicas for high availability
+CREATE CLUSTER my_cluster (
+  SIZE = '100cc',
+  REPLICATION FACTOR = 2
+);
+
+-- Set it as the default cluster for your session
+SET CLUSTER = my_cluster;
+```
+
+### Cluster Sizing Guidelines
+
+Choose a cluster size based on your workload:
+
+- **25cc-50cc**: Development and testing
+- **100cc-200cc**: Small production workloads
+- **400cc-800cc**: Medium production workloads
+- **1600cc+**: Large-scale production workloads
+
+You can resize clusters at any time without downtime.
+
+## Step 5: Create a Data Source
+
+Connect Materialize to your data sources. Here's an example using Kafka:
+
+```sql
+-- Create a connection to your Kafka cluster
+CREATE CONNECTION kafka_connection TO KAFKA (
+  BROKER 'kafka.example.com:9092',
+  SECURITY PROTOCOL = 'SASL_SSL',
+  SASL MECHANISMS = 'PLAIN',
+  SASL USERNAME = SECRET kafka_username,
+  SASL PASSWORD = SECRET kafka_password
+);
+
+-- Create a source from a Kafka topic
+CREATE SOURCE events
+FROM KAFKA CONNECTION kafka_connection (TOPIC 'user-events')
+FORMAT JSON;
+```
+
+Supported source types:
+- **Kafka**: Stream data from Apache Kafka
+- **PostgreSQL**: CDC from PostgreSQL databases
+- **MySQL**: CDC from MySQL databases
+- **S3**: Batch data from Amazon S3
+- **Webhook**: Real-time webhook ingestion
+
+## Step 6: Create a Materialized View
+
+Create a materialized view that automatically maintains query results:
+
+```sql
+-- Create a materialized view for real-time analytics
+CREATE MATERIALIZED VIEW event_counts AS
+SELECT
+  user_id,
+  event_type,
+  COUNT(*) as event_count,
+  MAX(timestamp) as last_event_time
+FROM events
+GROUP BY user_id, event_type;
+
+-- Query the materialized view
+SELECT * FROM event_counts
+WHERE user_id = '12345';
+```
+
+Materialized views incrementally update as new data arrives, providing always-current results.
+
+## Step 7: Monitor Your Environment
+
+Use the Materialize Console to monitor your environment:
+
+1. **Overview Dashboard**: View cluster status, resource usage, and query performance
+2. **Metrics**: Track CPU, memory, and disk usage over time
+3. **Query History**: Review executed queries and their performance
+4. **Alerts**: Configure alerts for resource thresholds and errors
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Connect to Data Sources" icon="database" href="/ingest-data/overview">
+    Learn how to connect Materialize to your data sources
+  </Card>
+  <Card title="Create Materialized Views" icon="eye" href="/transform-data/materialized-views">
+    Build real-time transformations with materialized views
+  </Card>
+  <Card title="Manage Clusters" icon="server" href="/manage/clusters">
+    Learn about cluster sizing, scaling, and management
+  </Card>
+  <Card title="Security Configuration" icon="lock" href="/security/overview">
+    Configure authentication, encryption, and access control
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Connection Issues
+
+If you can't connect to your environment:
+
+- Verify SSL/TLS is enabled (`sslmode=require`)
+- Check that your credentials are correct
+- Ensure your IP is not blocked by network policies
+- Confirm the environment is running in the Console
+
+### Performance Issues
+
+If queries are slow:
+
+- Check cluster resource utilization in the Console
+- Consider increasing cluster size
+- Review query execution plans using `EXPLAIN`
+- Add indexes to improve query performance
+
+## Support
+
+Need help? Materialize offers multiple support channels:
+
+- **Documentation**: Comprehensive guides at [materialize.com/docs](https://materialize.com/docs)
+- **Community Slack**: Join discussions with other users
+- **Support Portal**: Submit tickets for technical assistance
+- **Email**: support@materialize.com

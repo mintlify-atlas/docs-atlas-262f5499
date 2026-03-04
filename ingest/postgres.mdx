@@ -1,0 +1,526 @@
+---
+title: "PostgreSQL CDC"
+description: "Stream data from PostgreSQL databases to Materialize using Change Data Capture"
+---
+
+Materialize can ingest data from PostgreSQL (11+) databases using PostgreSQL's native logical replication protocol for Change Data Capture (CDC). This allows you to continuously stream `INSERT`, `UPDATE`, and `DELETE` operations from your PostgreSQL database into Materialize.
+
+## Prerequisites
+
+Before creating a PostgreSQL source, you must:
+
+1. **Enable logical replication** in your PostgreSQL database
+2. **Create a publication** for the tables you want to replicate
+3. **Create a dedicated replication user** with appropriate permissions
+4. **Configure network access** to allow Materialize to connect
+
+<Warning>
+Logical replication must be enabled before you can create a PostgreSQL source. This typically requires a database restart.
+</Warning>
+
+## Step 1: Configure PostgreSQL
+
+### Enable Logical Replication
+
+1. Check if logical replication is enabled:
+
+```sql
+-- In PostgreSQL
+SHOW wal_level;
+```
+
+2. If `wal_level` is not set to `logical`, update your `postgresql.conf`:
+
+```ini
+wal_level = logical
+```
+
+3. Restart PostgreSQL for the change to take effect.
+
+### Create a Publication
+
+Create a publication for the tables you want to replicate:
+
+```sql
+-- In PostgreSQL: Create publication for specific tables
+CREATE PUBLICATION mz_source FOR TABLE table1, table2, table3;
+
+-- Or for all tables in the database
+CREATE PUBLICATION mz_source FOR ALL TABLES;
+```
+
+### Create a Replication User
+
+Create a dedicated user with replication permissions:
+
+```sql
+-- In PostgreSQL
+CREATE USER materialize WITH REPLICATION PASSWORD '<password>';
+
+-- Grant permissions on the publication
+GRANT SELECT ON table1, table2, table3 TO materialize;
+GRANT USAGE ON SCHEMA public TO materialize;
+
+-- For all tables in a schema
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO materialize;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT ON TABLES TO materialize;
+```
+
+## Step 2: Configure Network Security
+
+Choose a network security option based on your deployment:
+
+<Tabs>
+  <Tab title="AWS PrivateLink">
+    AWS PrivateLink provides secure, private connectivity between Materialize and your PostgreSQL database in AWS.
+
+    **1. Create a target group for your PostgreSQL instance:**
+
+    - Target type: IP address
+    - Protocol: TCP
+    - Port: 5432 (or your custom port)
+
+    **2. Create a Network Load Balancer** in the same VPC as your PostgreSQL instance
+
+    **3. Create a TCP listener** that forwards to your target group
+
+    **4. Create a VPC endpoint service** and associate it with the NLB
+
+    **5. In Materialize, create the PrivateLink connection:**
+
+    ```sql
+    CREATE CONNECTION privatelink_svc TO AWS PRIVATELINK (
+        SERVICE NAME 'com.amazonaws.vpce.us-east-1.vpce-svc-0e123abc123198abc',
+        AVAILABILITY ZONES ('use1-az1', 'use1-az4')
+    );
+    ```
+
+    **6. Retrieve the AWS principal:**
+
+    ```sql
+    SELECT principal
+    FROM mz_aws_privatelink_connections plc
+    JOIN mz_connections c ON plc.id = c.id
+    WHERE c.name = 'privatelink_svc';
+    ```
+
+    **7. Configure your VPC endpoint service** to accept connections from the AWS principal
+  </Tab>
+  <Tab title="SSH Tunnel">
+    Use an SSH tunnel to connect to PostgreSQL through a bastion host.
+
+    **1. Get Materialize egress IPs:**
+
+    ```sql
+    SELECT * FROM mz_egress_ips;
+    ```
+
+    **2. Configure your bastion host** to allow SSH connections from those IPs
+
+    **3. Create the SSH tunnel connection:**
+
+    ```sql
+    CREATE CONNECTION ssh_connection TO SSH TUNNEL (
+        HOST 'bastion-host.example.com',
+        PORT 22,
+        USER 'materialize'
+    );
+    ```
+
+    **4. Get the public keys:**
+
+    ```sql
+    SELECT public_key_1, public_key_2
+    FROM mz_ssh_tunnel_connections
+    WHERE name = 'ssh_connection';
+    ```
+
+    **5. Add both public keys** to `~/.ssh/authorized_keys` on your bastion host
+  </Tab>
+  <Tab title="Static IP Allowlist">
+    Allow connections from Materialize's static egress IP addresses.
+
+    **1. Get Materialize egress IPs:**
+
+    ```sql
+    SELECT * FROM mz_egress_ips;
+    ```
+
+    **2. Update your PostgreSQL firewall/security group** to allow connections from those IP addresses on port 5432
+  </Tab>
+</Tabs>
+
+## Step 3: Create a Connection in Materialize
+
+<Tabs>
+  <Tab title="Direct Connection">
+    ```sql
+    CREATE SECRET pgpass AS '<POSTGRES_PASSWORD>';
+
+    CREATE CONNECTION pg_connection TO POSTGRES (
+        HOST 'instance.foo000.us-west-1.rds.amazonaws.com',
+        PORT 5432,
+        USER 'materialize',
+        PASSWORD SECRET pgpass,
+        SSL MODE 'require',
+        DATABASE 'postgres'
+    );
+    ```
+  </Tab>
+  <Tab title="With AWS PrivateLink">
+    ```sql
+    CREATE SECRET pgpass AS '<POSTGRES_PASSWORD>';
+
+    CREATE CONNECTION pg_connection TO POSTGRES (
+        HOST 'instance.foo000.us-west-1.rds.amazonaws.com',
+        PORT 5432,
+        USER 'materialize',
+        PASSWORD SECRET pgpass,
+        AWS PRIVATELINK privatelink_svc,
+        DATABASE 'postgres'
+    );
+    ```
+  </Tab>
+  <Tab title="With SSH Tunnel">
+    ```sql
+    CREATE SECRET pgpass AS '<POSTGRES_PASSWORD>';
+
+    CREATE CONNECTION pg_connection TO POSTGRES (
+        HOST 'internal-postgres.vpc.local',
+        PORT 5432,
+        USER 'materialize',
+        PASSWORD SECRET pgpass,
+        SSH TUNNEL ssh_connection,
+        DATABASE 'postgres'
+    );
+    ```
+  </Tab>
+</Tabs>
+
+## Step 4: Create a Source
+
+<Tabs>
+  <Tab title="All Tables">
+    Create subsources for all tables in the publication:
+
+    ```sql
+    CREATE SOURCE pg_source
+        FROM POSTGRES CONNECTION pg_connection
+        (PUBLICATION 'mz_source')
+        FOR ALL TABLES;
+    ```
+  </Tab>
+  <Tab title="Specific Schemas">
+    Create subsources for all tables from specific schemas:
+
+    ```sql
+    CREATE SOURCE pg_source
+        FROM POSTGRES CONNECTION pg_connection
+        (PUBLICATION 'mz_source')
+        FOR SCHEMAS (public, analytics);
+    ```
+  </Tab>
+  <Tab title="Specific Tables">
+    Create subsources for specific tables only:
+
+    ```sql
+    CREATE SOURCE pg_source
+        FROM POSTGRES CONNECTION pg_connection
+        (PUBLICATION 'mz_source')
+        FOR TABLES (users, orders, products AS inventory);
+    ```
+  </Tab>
+</Tabs>
+
+### Handling Unsupported Types
+
+If your tables contain unsupported data types, use the `TEXT COLUMNS` option:
+
+```sql
+CREATE SOURCE pg_source
+    FROM POSTGRES CONNECTION pg_connection (
+        PUBLICATION 'mz_source',
+        TEXT COLUMNS (table_name.column_with_unsupported_type)
+    )
+    FOR ALL TABLES;
+```
+
+## How It Works
+
+### Replication Slots
+
+Materialize automatically creates a **replication slot** in PostgreSQL for each source. The replication slot name is prefixed with `materialize_` for easy identification.
+
+```sql
+-- Find the replication slot name
+SELECT id, replication_slot
+FROM mz_internal.mz_postgres_sources;
+```
+
+```
+   id   |             replication_slot
+--------+----------------------------------------------
+  u8     | materialize_7f8a72d0bf2a4b6e9ebc4e61ba769b71
+```
+
+<Tip>
+Each source uses a **single** replication slot for all tables in the publication, minimizing the performance impact on PostgreSQL.
+</Tip>
+
+### Subsources
+
+Materialize automatically creates a **subsource** for each table in the publication:
+
+```sql
+SHOW SOURCES;
+```
+
+```
+         name         |   type
+----------------------+-----------
+ pg_source            | postgres
+ pg_source_progress   | progress
+ users                | subsource
+ orders               | subsource
+ products             | subsource
+```
+
+### Progress Tracking
+
+Monitor ingestion progress using the progress subsource:
+
+```sql
+SELECT lsn
+FROM pg_source_progress;
+```
+
+The `lsn` (Log Sequence Number) should increase as Materialize consumes new WAL records from PostgreSQL.
+
+## Monitoring
+
+### Check Source Status
+
+```sql
+SELECT *
+FROM mz_internal.mz_source_statuses
+WHERE name = 'pg_source';
+```
+
+### Monitor Snapshotting Progress
+
+```sql
+SELECT
+    name,
+    snapshot_committed,
+    bytes_received,
+    messages_received
+FROM mz_internal.mz_source_statistics s
+JOIN mz_sources src ON s.id = src.id
+WHERE src.name = 'pg_source';
+```
+
+### Monitor Replication Lag
+
+In PostgreSQL, check replication slot lag:
+
+```sql
+-- In PostgreSQL
+SELECT
+    slot_name,
+    pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)) AS lag
+FROM pg_replication_slots
+WHERE slot_name LIKE 'materialize_%';
+```
+
+## Schema Changes
+
+### Compatible Changes
+
+Materialize automatically handles these schema changes:
+
+- Adding a column with a `DEFAULT` value
+- Adding a nullable column
+- Dropping a column
+- Changing column default values
+
+### Incompatible Changes
+
+These changes require manual intervention:
+
+- Changing a column's data type
+- Adding a `NOT NULL` constraint
+- Renaming columns or tables
+
+**To handle incompatible changes:**
+
+```sql
+-- 1. Drop the affected subsource
+DROP SOURCE users;
+
+-- 2. Add it back to the source
+ALTER SOURCE pg_source ADD SUBSOURCE users;
+```
+
+## Handling Errors
+
+### Source in Error State
+
+Check the error message:
+
+```sql
+SELECT error
+FROM mz_internal.mz_source_statuses
+WHERE name = 'pg_source';
+```
+
+Common issues:
+
+- **Replication slot deleted**: Recreate the source
+- **Connection refused**: Check network security settings
+- **Authentication failed**: Verify credentials and permissions
+- **Publication not found**: Ensure the publication exists in PostgreSQL
+
+### Adding Subsources After Errors
+
+After fixing schema issues:
+
+```sql
+-- List all subsources
+SHOW SUBSOURCES ON pg_source;
+
+-- Drop the errored subsource
+DROP SOURCE table_name;
+
+-- Add it back with the updated schema
+ALTER SOURCE pg_source ADD SUBSOURCE table_name;
+```
+
+## Best Practices
+
+### Resource Management
+
+**Create a dedicated cluster for PostgreSQL sources:**
+
+```sql
+CREATE CLUSTER postgres_ingest SIZE = '100cc';
+
+SET CLUSTER = postgres_ingest;
+
+CREATE SOURCE pg_source FROM ...
+```
+
+**For large initial snapshots, use a larger cluster temporarily:**
+
+```sql
+-- Before creating the source
+ALTER CLUSTER postgres_ingest SET (SIZE = '200cc');
+
+-- After snapshotting completes
+ALTER CLUSTER postgres_ingest SET (SIZE = '100cc');
+```
+
+### Limit Data Volume
+
+- Create publications for specific tables, not all tables
+- Use schema filtering to limit subsources
+- Only replicate tables you need in Materialize
+
+### Publication Management
+
+<Warning>
+If you add or remove tables from the PostgreSQL publication, Materialize will **not** automatically detect these changes. You must manually add or drop subsources.
+</Warning>
+
+### WAL Retention
+
+Ensure PostgreSQL retains WAL files long enough:
+
+```sql
+-- In PostgreSQL
+SHOW wal_keep_size;  -- or wal_keep_segments for older versions
+```
+
+If Materialize is offline for too long, the replication slot may fall behind and you'll need to recreate the source.
+
+## Troubleshooting
+
+### Source Not Progressing
+
+**Check replication slot status in PostgreSQL:**
+
+```sql
+-- In PostgreSQL
+SELECT
+    slot_name,
+    active,
+    restart_lsn,
+    confirmed_flush_lsn
+FROM pg_replication_slots
+WHERE slot_name LIKE 'materialize_%';
+```
+
+**Check for replication conflicts:**
+
+```sql
+-- In PostgreSQL
+SELECT * FROM pg_stat_replication;
+```
+
+### High Memory Usage
+
+For tables with large row sizes or high update rates:
+
+1. Increase cluster size
+2. Limit columns using table-specific filtering
+3. Consider using separate sources for high-volume tables
+
+### Snapshotting Takes Too Long
+
+1. **Scale up the cluster** temporarily during snapshotting
+2. **Reduce data volume** by limiting tables or using filters
+3. **Run during off-peak hours** to minimize database load
+4. **Monitor progress** using `mz_source_statistics`
+
+### Connection Issues
+
+**Test connectivity from Materialize:**
+
+```sql
+-- This will fail if there are connectivity issues
+VALIDATE CONNECTION pg_connection;
+```
+
+**Common solutions:**
+
+- Verify firewall rules allow connections from Materialize IPs
+- Check that SSL/TLS settings match PostgreSQL configuration
+- Ensure the database user has replication permissions
+- Verify the PostgreSQL server is accepting replication connections
+
+## Supported PostgreSQL Services
+
+Materialize supports PostgreSQL CDC from:
+
+- **Amazon RDS for PostgreSQL**
+- **Amazon Aurora PostgreSQL**
+- **Google Cloud SQL for PostgreSQL**
+- **Azure Database for PostgreSQL**
+- **Self-hosted PostgreSQL**
+- **AlloyDB for PostgreSQL**
+- **Neon**
+
+<Note>
+Some managed PostgreSQL services require additional configuration steps. Consult your provider's documentation for enabling logical replication.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Transform Data" icon="wand-magic-sparkles" href="/transform">
+    Create materialized views on your PostgreSQL data
+  </Card>
+  <Card title="MySQL CDC" icon="database" href="/ingest/mysql">
+    Learn about ingesting data from MySQL
+  </Card>
+</CardGroup>

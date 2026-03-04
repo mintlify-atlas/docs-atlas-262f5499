@@ -1,0 +1,633 @@
+---
+title: 'Indexes'
+description: 'Store query results in memory for instant access'
+---
+
+## Overview
+
+Indexes in Materialize represent **query results stored in memory** within a cluster. Unlike traditional database indexes that simply speed up lookups, Materialize indexes store the **complete, up-to-date results** of queries and maintain them incrementally as data changes.
+
+```sql
+-- Create a view
+CREATE VIEW recent_orders AS
+SELECT * FROM orders
+WHERE order_time > NOW() - INTERVAL '1 hour';
+
+-- Index the view in memory
+CREATE INDEX idx_recent_orders ON recent_orders(customer_id);
+```
+
+<Info>
+Indexes make queries **computationally free** — results are pre-computed and served directly from memory with no query-time computation.
+</Info>
+
+## Indexes vs Materialized Views
+
+<CardGroup cols={2}>
+  <Card title="Indexes">
+    **Storage**: In-memory (RAM)
+    
+    **Scope**: Local to a cluster
+    
+    **Speed**: Microsecond query latency
+    
+    **Durability**: Lost on cluster restart
+    
+    **Best for**: Fast reads within a cluster
+  </Card>
+  <Card title="Materialized Views">
+    **Storage**: Durable storage (S3/disk)
+    
+    **Scope**: Accessible from any cluster
+    
+    **Speed**: Millisecond to sub-second latency
+    
+    **Durability**: Survives restarts
+    
+    **Best for**: Cross-cluster sharing
+  </Card>
+</CardGroup>
+
+### When to Use Each
+
+```sql
+-- Scenario 1: Single cluster, fast queries
+CREATE VIEW customer_summary AS
+SELECT customer_id, COUNT(*) as orders
+FROM orders GROUP BY customer_id;
+
+CREATE INDEX idx_summary ON customer_summary(customer_id);
+-- Result: Fast queries in current cluster only
+
+-- Scenario 2: Multiple clusters need same data
+CREATE MATERIALIZED VIEW customer_summary AS
+SELECT customer_id, COUNT(*) as orders
+FROM orders GROUP BY customer_id;
+
+CREATE INDEX idx_cluster1 IN CLUSTER serving1
+ON customer_summary(customer_id);
+
+CREATE INDEX idx_cluster2 IN CLUSTER serving2
+ON customer_summary(customer_id);
+-- Result: Both clusters can query fast from memory
+```
+
+<Tip>
+**Rule of thumb**: Use indexed views for single-cluster workloads. Use materialized views + indexes for multi-cluster architectures or when you need durability.
+</Tip>
+
+## How Indexes Work
+
+Indexes in Materialize are **arrangements** — multi-versioned, indexed collections:
+
+```rust
+// Conceptual structure
+Arrangement<K, V, T, D> = BTreeMap<K, Vec<(V, T, D)>>
+```
+
+- **K**: Index key (indexed columns)
+- **V**: Value (remaining columns)
+- **T**: Timestamp (logical time)
+- **D**: Diff (+1 or -1)
+
+This structure enables:
+- **Point lookups**: O(log n) lookup by key
+- **Range scans**: Efficient iteration over key ranges
+- **Time travel**: Access data at any historical timestamp
+- **Sharing**: Multiple operators can use the same arrangement
+
+### Example: Index Structure
+
+```sql
+CREATE INDEX idx_orders ON orders(customer_id);
+```
+
+Internal structure:
+```
+Key: customer_id | Value: (order_id, amount, timestamp, diff)
+─────────────────┼───────────────────────────────────────────
+"CUST-001"       | (1001, 49.99, T1, +1)
+                 | (1005, 99.99, T3, +1)
+"CUST-002"       | (1002, 29.99, T1, +1)
+                 | (1003, 19.99, T2, +1)
+                 | (1003, 19.99, T2, -1)  // Deleted
+                 | (1004, 39.99, T2, +1)
+```
+
+<Info>
+Columns in the index key are deduplicated from the value to avoid storing data twice.
+</Info>
+
+## Index Usage
+
+Unlike traditional databases, Materialize can use indexes even without `WHERE` clause filters:
+
+```sql
+CREATE INDEX idx_orders ON orders_view(status);
+```
+
+This index accelerates **all** of these queries:
+
+```sql
+-- Full scan (uses index)
+SELECT * FROM orders_view;
+
+-- Filter on indexed column (point lookup)
+SELECT * FROM orders_view WHERE status = 'shipped';
+
+-- Filter on non-indexed column (scans index)
+SELECT * FROM orders_view WHERE amount > 100;
+
+-- Join (uses index for lookup)
+SELECT * FROM orders_view o
+JOIN customers c ON o.customer_id = c.id
+WHERE o.status = 'shipped';
+```
+
+### Point Lookups
+
+Materialize performs **point lookups** (most efficient) when the `WHERE` clause:
+
+1. Specifies **equality conditions** (`=` or `IN`) on **all** indexed columns
+2. Uses **only AND** (no OR) to combine conditions
+3. Matches the **exact index key expression** including types
+
+<CodeGroup>
+
+```sql Point Lookup ✓
+-- Index: (customer_id, status)
+SELECT * FROM orders 
+WHERE customer_id = 'CUST-123' 
+  AND status = 'shipped';
+-- Reads only matching records
+```
+
+```sql Index Scan ✗
+-- Index: (customer_id, status)
+SELECT * FROM orders 
+WHERE customer_id = 'CUST-123';
+-- Scans all records for CUST-123 (missing status)
+```
+
+</CodeGroup>
+
+### Multi-Column Indexes
+
+```sql
+CREATE INDEX idx_orders ON orders(customer_id, order_date);
+```
+
+Point lookup behavior:
+
+| Query | Lookup Type | Reason |
+|-------|-------------|--------|
+| `WHERE customer_id = 'C1' AND order_date = '2024-01-01'` | Point lookup ✓ | All columns specified |
+| `WHERE customer_id = 'C1'` | Index scan | Missing `order_date` |
+| `WHERE order_date = '2024-01-01'` | Index scan | Missing `customer_id` |
+| `WHERE customer_id = 'C1' OR order_date = '2024-01-01'` | Index scan | Uses OR |
+
+<Warning>
+Index column order matters for point lookups. Place most selective columns first.
+</Warning>
+
+## Creating Indexes
+
+### On Views
+
+```sql
+CREATE VIEW order_summary AS
+SELECT 
+    customer_id,
+    COUNT(*) as order_count,
+    SUM(amount) as total_spent
+FROM orders
+GROUP BY customer_id;
+
+-- Index in current cluster
+CREATE INDEX idx_summary ON order_summary(customer_id);
+
+-- Index in specific cluster
+CREATE INDEX idx_summary_serving 
+IN CLUSTER serving_cluster
+ON order_summary(customer_id);
+```
+
+### On Materialized Views
+
+```sql
+CREATE MATERIALIZED VIEW customer_metrics AS
+SELECT 
+    customer_id,
+    AVG(amount) as avg_order,
+    MAX(amount) as max_order
+FROM orders
+GROUP BY customer_id;
+
+-- Index the materialized view for fast queries
+CREATE INDEX idx_metrics 
+IN CLUSTER serving1
+ON customer_metrics(customer_id);
+```
+
+<Info>
+Indexing a materialized view requires **no additional computation** — the results already exist in durable storage and are simply loaded into memory.
+</Info>
+
+### On Sources
+
+```sql
+CREATE SOURCE kafka_events
+FROM KAFKA CONNECTION kafka_conn (TOPIC 'events')
+FORMAT JSON;
+
+-- Index the source directly
+CREATE INDEX idx_events ON kafka_events(user_id);
+```
+
+<Tip>
+Indexing sources directly is rare in practice. Usually you'll create views that transform source data, then index those views.
+</Tip>
+
+## Index Expressions
+
+Indexes support expressions, not just columns:
+
+```sql
+-- Index on computed column
+CREATE INDEX idx_monthly ON orders(
+    DATE_TRUNC('month', order_time)
+);
+
+-- Query must match exact expression
+SELECT * FROM orders
+WHERE DATE_TRUNC('month', order_time) = '2024-01-01';
+```
+
+```sql
+-- Index on multiple expressions
+CREATE INDEX idx_computed ON orders(
+    LOWER(customer_name),
+    ROUND(amount, 2)
+);
+
+-- Point lookup
+SELECT * FROM orders
+WHERE LOWER(customer_name) = 'alice'
+  AND ROUND(amount, 2) = 49.99;
+```
+
+<Warning>
+Type mismatches prevent point lookups:
+
+```sql
+CREATE INDEX idx ON orders(quantity);  -- quantity is integer
+
+SELECT * FROM orders WHERE quantity = 5;    -- Point lookup ✓
+SELECT * FROM orders WHERE quantity = 5.0;  -- Index scan (float ≠ int)
+```
+</Warning>
+
+## Incremental Maintenance
+
+Indexes are maintained incrementally using differential dataflow:
+
+```sql
+CREATE INDEX idx_summary ON order_summary(customer_id);
+
+-- When a new order arrives:
+INSERT INTO orders VALUES (1001, 'CUST-123', 49.99);
+```
+
+Materialize:
+1. Computes the **delta** to `order_summary`:
+   ```
+   ('CUST-123', order_count: +1, total_spent: +49.99)
+   ```
+2. Updates only the affected entry in the index
+3. Propagates changes in microseconds
+
+No full recomputation occurs — only the changed data is processed.
+
+### Join Indexes
+
+Join operators require both inputs to be arranged (indexed):
+
+```sql
+CREATE VIEW enriched_orders AS
+SELECT 
+    o.order_id,
+    c.customer_name,
+    o.amount
+FROM orders o
+JOIN customers c ON o.customer_id = c.id;
+
+CREATE INDEX idx_enriched ON enriched_orders(order_id);
+```
+
+Under the hood:
+```
+orders ──> Arrangement(customer_id) ─┐
+                                      ├─> Join ─> Arrangement(order_id)
+customers ─> Arrangement(id) ────────┘
+```
+
+Materialize automatically creates intermediate arrangements for joins. You can query `mz_arrangement_sizes` to see them:
+
+```sql
+SELECT 
+    operator_name,
+    pg_size_pretty(size) as memory_used
+FROM mz_arrangement_sizes
+JOIN mz_dataflow_operators USING (operator_id)
+WHERE dataflow_id IN (
+    SELECT dataflow_id FROM mz_dataflows WHERE name = 'enriched_orders'
+);
+```
+
+## Memory Management
+
+### Logical Compaction
+
+Indexes support **logical compaction** to reduce memory usage:
+
+```sql
+-- Compact index to only maintain recent data
+ALTER INDEX idx_orders SET (LOGICAL COMPACTION WINDOW = '1 hour');
+```
+
+This removes historical versions older than 1 hour, reducing memory while maintaining correctness for recent queries.
+
+<Info>
+Compaction is safe — Materialize ensures query correctness by only compacting data that's no longer needed.
+</Info>
+
+### Physical Compaction
+
+Physical compaction happens **lazily** in the background:
+
+- Merges accumulated updates (`+1` and `-1` cancel out)
+- Removes deleted records (where total diff = 0)
+- Consolidates multi-version history
+
+You don't control physical compaction — Materialize manages it automatically.
+
+### Monitoring Memory Usage
+
+```sql
+-- Index sizes by name
+SELECT 
+    mz_indexes.name,
+    pg_size_pretty(SUM(mz_arrangement_sizes.size)) as total_size
+FROM mz_indexes
+JOIN mz_arrangement_sizes ON mz_indexes.id = mz_arrangement_sizes.object_id
+GROUP BY mz_indexes.name
+ORDER BY SUM(mz_arrangement_sizes.size) DESC;
+
+-- Total memory by cluster
+SELECT 
+    mz_clusters.name,
+    pg_size_pretty(SUM(mz_arrangement_sizes.size)) as memory_used
+FROM mz_clusters
+JOIN mz_indexes ON mz_indexes.cluster_id = mz_clusters.id
+JOIN mz_arrangement_sizes ON mz_indexes.id = mz_arrangement_sizes.object_id
+GROUP BY mz_clusters.name;
+```
+
+## Cluster Considerations
+
+Indexes are **local to clusters** and don't transfer between them:
+
+```sql
+-- Create indexes in multiple clusters
+CREATE INDEX idx_serving1 IN CLUSTER serving1
+ON customer_summary(customer_id);
+
+CREATE INDEX idx_serving2 IN CLUSTER serving2  
+ON customer_summary(customer_id);
+
+-- Queries in serving1 use idx_serving1
+-- Queries in serving2 use idx_serving2
+-- Queries in other clusters don't use indexes
+```
+
+<Tip>
+**Three-tier architecture** pattern:
+1. **Ingest cluster**: Sources
+2. **Transform cluster**: Materialized views (no indexes)
+3. **Serving clusters**: Indexes on materialized views
+
+This separates ingestion, transformation, and query serving workloads.
+</Tip>
+
+## Index-Free Queries
+
+Materialize can answer some queries without indexes using **dataflow operators**:
+
+```sql
+-- No index exists on orders
+SELECT COUNT(*) FROM orders WHERE status = 'pending';
+```
+
+Materialize:
+1. Constructs a dataflow: Source → Filter → Count
+2. Processes the entire dataset once
+3. Returns results
+
+**With index**:
+```sql
+CREATE VIEW pending_count AS
+SELECT COUNT(*) FROM orders WHERE status = 'pending';
+
+CREATE INDEX idx_pending ON pending_count();
+
+-- Query returns instantly from memory
+SELECT * FROM pending_count;
+```
+
+<Info>
+Index-free queries still execute efficiently but require compute time proportional to data size. Indexes make queries O(1) — constant time.
+</Info>
+
+## Optimization Patterns
+
+### Pattern 1: Reduce Before Join
+
+```sql
+-- Bad: Large intermediate state
+CREATE VIEW bad_example AS
+SELECT c.name, COUNT(*)
+FROM huge_events e
+JOIN customers c ON e.customer_id = c.id
+GROUP BY c.name;
+
+-- Good: Reduce early
+CREATE VIEW event_counts AS
+SELECT customer_id, COUNT(*) as cnt
+FROM huge_events
+GROUP BY customer_id;
+
+CREATE VIEW good_example AS
+SELECT c.name, e.cnt
+FROM event_counts e
+JOIN customers c ON e.customer_id = c.id;
+```
+
+### Pattern 2: Selective Indexes
+
+```sql
+-- Index only filtered data
+CREATE VIEW recent_orders AS
+SELECT * FROM orders
+WHERE order_time > NOW() - INTERVAL '7 days';
+
+CREATE INDEX idx_recent ON recent_orders(customer_id);
+-- Uses less memory than indexing all orders
+```
+
+### Pattern 3: Shared Arrangements
+
+```sql
+-- Both views share the same arrangement
+CREATE VIEW view1 AS
+SELECT customer_id, SUM(amount)
+FROM orders
+GROUP BY customer_id;
+
+CREATE VIEW view2 AS
+SELECT customer_id, COUNT(*)
+FROM orders
+GROUP BY customer_id;
+
+-- Single index serves both
+CREATE INDEX idx_orders ON orders(customer_id);
+```
+
+## Limitations
+
+<Warning>
+**Index ordering is not guaranteed**
+
+Materialize does not maintain a physical sort order:
+
+```sql
+CREATE INDEX idx ON orders(order_time);
+
+-- No performance benefit from ORDER BY on indexed column
+SELECT * FROM orders ORDER BY order_time;
+```
+
+Sorting still requires computation. Use `LIMIT` or window functions for top-N queries.
+</Warning>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Index High-Cardinality Keys">
+    Indexes work best with selective keys:
+    ```sql
+    -- Good: customer_id is selective
+    CREATE INDEX idx ON orders(customer_id);
+    
+    -- Less useful: status has few distinct values
+    CREATE INDEX idx ON orders(status);
+    ```
+  </Accordion>
+  
+  <Accordion title="Monitor Arrangement Sizes">
+    Large arrangements indicate optimization opportunities:
+    ```sql
+    SELECT name, pg_size_pretty(size)
+    FROM mz_indexes
+    JOIN mz_arrangement_sizes USING (id)
+    WHERE size > 1024*1024*1024  -- > 1GB
+    ORDER BY size DESC;
+    ```
+  </Accordion>
+  
+  <Accordion title="Drop Unused Indexes">
+    Indexes consume memory even when not queried:
+    ```sql
+    DROP INDEX idx_unused;
+    ```
+    Monitor query patterns and remove indexes that aren't being used.
+  </Accordion>
+  
+  <Accordion title="Use Default Indexes Sparingly">
+    Creating a default index on all columns:
+    ```sql
+    CREATE DEFAULT INDEX ON my_view;
+    ```
+    Convenient but uses more memory than selective indexes. Prefer explicit column lists.
+  </Accordion>
+</AccordionGroup>
+
+## Example: E-Commerce Dashboard
+
+Build a real-time dashboard with optimized indexes:
+
+```sql
+-- Ingest orders from PostgreSQL
+CREATE SOURCE pg_source
+FROM POSTGRES CONNECTION pg_conn
+(PUBLICATION 'mz_source');
+
+-- Transform: Customer metrics
+CREATE VIEW customer_metrics AS
+SELECT 
+    customer_id,
+    COUNT(*) as order_count,
+    SUM(total) as lifetime_value,
+    MAX(order_time) as last_order
+FROM pg_source_orders
+GROUP BY customer_id;
+
+-- Index for customer lookup page
+CREATE INDEX idx_customer IN CLUSTER serving
+ON customer_metrics(customer_id);
+
+-- Transform: Top products
+CREATE VIEW top_products AS
+SELECT 
+    product_id,
+    COUNT(*) as sales_count,
+    SUM(quantity) as total_quantity
+FROM pg_source_order_items
+WHERE order_time > NOW() - INTERVAL '24 hours'
+GROUP BY product_id
+ORDER BY sales_count DESC
+LIMIT 100;
+
+-- Index for dashboard main page
+CREATE DEFAULT INDEX ON top_products;
+
+-- Transform: Real-time revenue
+CREATE VIEW revenue_by_hour AS
+SELECT 
+    DATE_TRUNC('hour', order_time) as hour,
+    COUNT(*) as order_count,
+    SUM(total) as revenue
+FROM pg_source_orders
+WHERE order_time > NOW() - INTERVAL '7 days'
+GROUP BY hour;
+
+-- Index for time-series chart
+CREATE INDEX idx_revenue IN CLUSTER serving
+ON revenue_by_hour(hour);
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Create Sinks" icon="arrow-right" href="/concepts/sinks">
+    Push data to external systems
+  </Card>
+  <Card title="Optimize Clusters" icon="gauge" href="/concepts/clusters">
+    Size clusters for index memory requirements
+  </Card>
+  <Card title="SQL Reference" icon="book" href="/sql/create-index">
+    Complete CREATE INDEX syntax
+  </Card>
+  <Card title="Query Optimization" icon="rocket" href="/transform-data/optimization">
+    Advanced optimization techniques
+  </Card>
+</CardGroup>

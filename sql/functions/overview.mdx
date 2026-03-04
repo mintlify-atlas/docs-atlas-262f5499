@@ -1,0 +1,121 @@
+---
+title: SQL Functions
+description: Overview of SQL functions and operators supported in Materialize
+---
+
+Materialize supports a comprehensive set of SQL functions and operators for data transformation, aggregation, and analysis.
+
+## Function Categories
+
+Materialize's SQL functions are organized into the following categories:
+
+### Aggregate Functions
+
+Aggregate functions perform calculations across multiple rows and return a single result. Common aggregate functions include:
+
+- **COUNT**: Count the number of rows
+- **SUM**: Calculate the sum of numeric values
+- **AVG**: Calculate the average of numeric values
+- **MIN/MAX**: Find minimum or maximum values
+- **STDDEV/VARIANCE**: Calculate statistical measures
+- **array_agg**: Aggregate values into an array
+- **string_agg**: Concatenate strings with a delimiter
+- **jsonb_agg**: Aggregate values as a JSONB array
+
+[Learn more about aggregate functions →](/sql/functions/aggregates)
+
+### String Functions
+
+String functions manipulate and analyze text data:
+
+- **CONCAT**: Concatenate strings
+- **SUBSTRING**: Extract substrings
+- **UPPER/LOWER**: Convert case
+- **LENGTH**: Get string length
+- **REGEXP**: Pattern matching with regular expressions
+- **normalize**: Unicode normalization
+
+[Learn more about string functions →](/sql/functions/string)
+
+### Date and Time Functions
+
+Date and time functions work with temporal data types:
+
+- **NOW()**: Current timestamp
+- **mz_now()**: Logical timestamp
+- **DATE_TRUNC**: Truncate to time component
+- **EXTRACT**: Extract time components
+- **datediff**: Calculate date differences
+- **date_bin**: Align timestamps to intervals
+
+[Learn more about date/time functions →](/sql/functions/date-time)
+
+### JSON Functions
+
+JSON functions process JSONB data:
+
+- **Operators**: `->`, `->>`, `@>`, `?` for accessing and querying JSON
+- **jsonb_agg**: Aggregate as JSONB array
+- **jsonb_object_agg**: Aggregate as JSONB object
+- **jsonb_build_array/object**: Construct JSON values
+- **to_jsonb**: Convert values to JSONB
+
+[Learn more about JSON functions →](/sql/functions/json)
+
+## Operators
+
+Materialize supports standard SQL operators:
+
+### Comparison Operators
+
+- `=`, `<>`, `!=`: Equality and inequality
+- `<`, `>`, `<=`, `>=`: Comparison
+- `BETWEEN`, `IN`: Range and set membership
+- `IS NULL`, `IS NOT NULL`: Null checking
+- `LIKE`, `ILIKE`: Pattern matching
+
+### Arithmetic Operators
+
+- `+`, `-`, `*`, `/`: Basic arithmetic
+- `%`: Modulo
+- `&`, `|`, `#`, `~`: Bitwise operations
+- `<<`, `>>`: Bit shifting
+
+### Logical Operators
+
+- `AND`, `OR`, `NOT`: Boolean logic
+- `IS TRUE`, `IS FALSE`, `IS UNKNOWN`: Boolean testing
+
+### String Operators
+
+- `||`: Concatenation
+- `~`, `~*`, `!~`, `!~*`: Regular expression matching
+
+## Unmaterializable Functions
+
+Some functions are **unmaterializable** because their output depends on external state (like session parameters or transaction timestamps). These functions:
+
+- Cannot be used in indexes or materialized views
+- Can be used in non-materialized views and `SELECT` statements
+- Include functions like `now()`, session variables, etc.
+
+## Type Casting
+
+Convert values between types using the `CAST` function or `::` operator:
+
+```sql
+SELECT CAST('123' AS int);
+SELECT '123'::int;
+SELECT int '123';
+```
+
+Different cast contexts exist:
+- **Implicit**: Automatic conversions
+- **Assignment**: Conversions when inserting data
+- **Explicit**: Require explicit `CAST` or `::`
+
+## Related Resources
+
+- [SQL Data Types](/sql/types)
+- [CREATE MATERIALIZED VIEW](/sql/create-materialized-view)
+- [SELECT Statement](/sql/select)

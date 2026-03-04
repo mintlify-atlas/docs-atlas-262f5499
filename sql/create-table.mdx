@@ -1,0 +1,376 @@
+---
+title: 'CREATE TABLE'
+description: 'Create tables for storing data in Materialize'
+---
+
+## Overview
+
+CREATE TABLE defines a table that is persisted in durable storage. Materialize supports both read-write tables and read-only tables from PostgreSQL sources.
+
+## Syntax
+
+### Read-Write Table
+
+```sql
+CREATE TABLE [IF NOT EXISTS] <table_name> (
+  <column_name> <data_type> [<column_constraint> ...],
+  ...
+);
+```
+
+### Source-Populated Table (Private Preview)
+
+```sql
+CREATE TABLE <table_name>
+  FROM SOURCE <source_name>
+  (<upstream_table_reference>);
+```
+
+## Parameters
+
+<ParamField path="table_name" type="identifier" required>
+  Name of the table to create
+</ParamField>
+
+<ParamField path="column_name" type="identifier" required>
+  Name of a column in the table
+</ParamField>
+
+<ParamField path="data_type" type="type" required>
+  Data type for the column (e.g., `integer`, `text`, `timestamp`)
+</ParamField>
+
+<ParamField path="column_constraint" type="constraint">
+  Optional constraints: `NOT NULL`, `DEFAULT value`
+</ParamField>
+
+## Read-Write Tables
+
+User-defined tables that support INSERT, UPDATE, DELETE, and SELECT operations:
+
+```sql
+CREATE TABLE users (
+  id integer NOT NULL,
+  name text NOT NULL,
+  email text NOT NULL,
+  created_at timestamp DEFAULT now()
+);
+
+-- Insert data
+INSERT INTO users (id, name, email) 
+VALUES (1, 'Alice', 'alice@example.com');
+
+-- Query data
+SELECT * FROM users;
+
+-- Update data
+UPDATE users SET email = 'alice@newdomain.com' WHERE id = 1;
+
+-- Delete data
+DELECT FROM users WHERE id = 1;
+```
+
+### Column Constraints
+
+<ParamField path="NOT NULL">
+  Prevents NULL values in the column
+  
+  ```sql
+  CREATE TABLE users (
+    id integer NOT NULL,
+    email text NOT NULL
+  );
+  ```
+</ParamField>
+
+<ParamField path="DEFAULT">
+  Sets a default value for the column
+  
+  ```sql
+  CREATE TABLE events (
+    id integer,
+    created_at timestamp DEFAULT now(),
+    status text DEFAULT 'pending'
+  );
+  ```
+</ParamField>
+
+### Known Limitations
+
+Read-write tables do not currently support:
+- Primary keys
+- Unique constraints
+- Check constraints
+- Foreign keys
+
+### Write Performance
+
+<Warning>
+  Write operations (`INSERT`, `UPDATE`, `DELETE`) have performance limitations:
+  - Block other write operations while processing
+  - Not optimized for high-throughput writes
+  - Cannot be used inside transactions
+</Warning>
+
+For high-volume data ingestion, use sources instead of tables.
+
+## Source-Populated Tables
+
+<Note>
+  Source-populated tables are in **Private Preview** and require Materialize v0.80+
+</Note>
+
+Read-only tables populated by PostgreSQL sources:
+
+```sql
+-- Create PostgreSQL source
+CREATE SECRET pgpass AS 'password';
+
+CREATE CONNECTION pg_conn TO POSTGRES (
+  HOST 'postgres.example.com',
+  PORT 5432,
+  USER 'materialize',
+  PASSWORD SECRET pgpass,
+  DATABASE 'mydb'
+);
+
+CREATE SOURCE pg_source
+  FROM POSTGRES CONNECTION pg_conn
+  (PUBLICATION 'mz_source')
+  FOR TABLES (public.users, public.orders);
+
+-- Create table from source
+CREATE TABLE users
+  FROM SOURCE pg_source
+  (public.users);
+
+CREATE TABLE orders  
+  FROM SOURCE pg_source
+  (public.orders);
+```
+
+### Read-Only Behavior
+
+Source-populated tables are **read-only**:
+
+```sql
+-- This works
+SELECT * FROM users;
+
+-- These will fail
+INSERT INTO users VALUES (...);
+UPDATE users SET ...;
+DELETE FROM users WHERE ...;
+```
+
+The table is automatically updated as the upstream database changes via CDC.
+
+### Schema Changes
+
+Source-populated tables support certain schema changes:
+
+**Compatible Changes:**
+- Adding new nullable columns
+- Adding columns with default values
+- Dropping columns
+
+**Incompatible Changes:**
+- Changing column types
+- Adding NOT NULL columns without defaults
+- Renaming columns
+- Changing primary keys
+
+For incompatible changes, you must recreate the table.
+
+## Examples
+
+### Basic Table
+
+```sql
+CREATE TABLE products (
+  product_id integer NOT NULL,
+  name text NOT NULL,
+  description text,
+  price numeric(10, 2) NOT NULL,
+  in_stock boolean DEFAULT true
+);
+
+INSERT INTO products VALUES
+  (1, 'Widget', 'A useful widget', 19.99, true),
+  (2, 'Gadget', 'An amazing gadget', 29.99, false);
+
+SELECT * FROM products WHERE in_stock = true;
+```
+
+### Table with Default Values
+
+```sql
+CREATE TABLE events (
+  event_id integer NOT NULL,
+  event_type text NOT NULL,
+  user_id integer NOT NULL,
+  event_time timestamp DEFAULT now(),
+  metadata jsonb DEFAULT '{}'::jsonb
+);
+
+INSERT INTO events (event_id, event_type, user_id)
+VALUES (1, 'login', 100);
+-- event_time and metadata use default values
+```
+
+### Table with Complex Types
+
+```sql
+CREATE TABLE user_profiles (
+  user_id integer NOT NULL,
+  tags text[],
+  settings jsonb,
+  last_login timestamptz
+);
+
+INSERT INTO user_profiles VALUES (
+  1,
+  ARRAY['premium', 'verified'],
+  '{"theme": "dark", "notifications": true}'::jsonb,
+  '2024-03-15 10:30:00+00'
+);
+```
+
+### Table for Dimensional Data
+
+```sql
+CREATE TABLE dim_customers (
+  customer_id integer NOT NULL,
+  customer_name text NOT NULL,
+  email text NOT NULL,
+  country text,
+  segment text,
+  created_at timestamp DEFAULT now()
+);
+
+-- Use in joins with streaming data
+CREATE MATERIALIZED VIEW enriched_orders AS
+  SELECT
+    o.order_id,
+    o.amount,
+    c.customer_name,
+    c.email,
+    c.country
+  FROM orders_source o
+  JOIN dim_customers c ON o.customer_id = c.customer_id;
+```
+
+## Using Tables in Transformations
+
+Tables can be joined with sources and views:
+
+```sql
+-- Lookup table
+CREATE TABLE product_categories (
+  product_id integer NOT NULL,
+  category text NOT NULL
+);
+
+-- Join with streaming source
+CREATE MATERIALIZED VIEW categorized_sales AS
+  SELECT
+    s.sale_id,
+    s.product_id,
+    pc.category,
+    s.amount
+  FROM sales_source s
+  JOIN product_categories pc ON s.product_id = pc.product_id;
+```
+
+## Creating Indexes on Tables
+
+```sql
+CREATE TABLE users (
+  user_id integer NOT NULL,
+  email text NOT NULL,
+  name text
+);
+
+-- Create index for fast lookups
+CREATE INDEX users_email_idx ON users (email);
+
+-- Fast query
+SELECT * FROM users WHERE email = 'alice@example.com';
+```
+
+## Creating Materialized Views from Tables
+
+```sql
+CREATE TABLE orders (
+  order_id integer NOT NULL,
+  customer_id integer NOT NULL,
+  amount numeric NOT NULL,
+  order_date date NOT NULL
+);
+
+CREATE MATERIALIZED VIEW monthly_revenue AS
+  SELECT
+    date_trunc('month', order_date) AS month,
+    SUM(amount) AS total_revenue
+  FROM orders
+  GROUP BY month;
+```
+
+## Tables vs Sources
+
+| Feature | Tables | Sources |
+|---------|--------|----------|
+| Write operations | Yes (INSERT, UPDATE, DELETE) | No |
+| High throughput writes | No | Yes |
+| External data | No | Yes |
+| CDC | No | Yes (from PostgreSQL, etc.) |
+| Best for | Dimensional data, small datasets | Streaming data, large datasets |
+
+**Use Tables When:**
+- Loading dimensional/reference data
+- Need manual data entry
+- Small, infrequently updated datasets
+- Simple CRUD operations
+
+**Use Sources When:**
+- Ingesting streaming data
+- High-volume data ingestion
+- CDC from databases
+- External system integration
+
+## Best Practices
+
+1. **Use NOT NULL**: Explicitly mark required columns as NOT NULL
+   ```sql
+   CREATE TABLE users (
+     id integer NOT NULL,
+     email text NOT NULL
+   );
+   ```
+
+2. **Set Defaults**: Use DEFAULT for timestamp and status columns
+   ```sql
+   created_at timestamp DEFAULT now()
+   ```
+
+3. **Keep Tables Small**: Tables are best for dimensional data, not fact data
+
+4. **Create Indexes**: Add indexes for frequently queried columns
+   ```sql
+   CREATE INDEX ON users (email);
+   ```
+
+5. **Use Sources for High Volume**: Don't use tables for high-throughput writes
+
+6. **Document Schema**: Use comments to document table purposes
+   ```sql
+   COMMENT ON TABLE users IS 'Customer user accounts';
+   ```
+
+## Related Pages
+
+- [INSERT](/sql/insert)
+- [UPDATE](/sql/update)
+- [DELETE](/sql/delete)
+- [CREATE SOURCE](/sql/create-source)
+- [CREATE INDEX](/sql/create-index)

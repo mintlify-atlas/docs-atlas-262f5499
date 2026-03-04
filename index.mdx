@@ -1,97 +1,210 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Materialize Documentation"
+description: "Real-time data integration and streaming SQL platform"
+mode: "custom"
 ---
 
-## Setting up
+<div className="relative overflow-hidden bg-gradient-to-b from-[#0B0A1A] to-[#1a1528] dark:from-[#0B0A1A] dark:to-[#1a1528] py-20">
+  <div className="max-w-7xl mx-auto px-6 lg:px-8">
+    <div className="grid lg:grid-cols-2 gap-12 items-center">
+      <div className="space-y-8">
+        <h1 className="text-5xl lg:text-6xl font-bold text-white leading-tight">
+          Real-time data views,<br />powered by SQL
+        </h1>
+        <p className="text-xl text-gray-300 max-w-2xl">
+          Materialize is a streaming SQL database that maintains up-to-the-second views of your data with strong consistency guarantees. Connect your data sources and query them with standard PostgreSQL.
+        </p>
+        <div className="flex flex-wrap gap-4">
+          <a 
+            href="/quickstart" 
+            className="inline-flex items-center px-6 py-3 rounded-lg bg-[#6c33ff] hover:bg-[#5829d4] text-white font-semibold transition-colors no-underline"
+          >
+            Get Started
+            <svg className="ml-2 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+            </svg>
+          </a>
+          <a 
+            href="/key-concepts" 
+            className="inline-flex items-center px-6 py-3 rounded-lg border border-white/30 bg-white/10 hover:bg-white/20 text-white font-semibold transition-colors no-underline"
+          >
+            Learn Core Concepts
+          </a>
+        </div>
+      </div>
+      <div className="hidden lg:block">
+        <div className="relative">
+          <div className="absolute inset-0 bg-gradient-to-r from-[#6c33ff]/20 to-[#2d1f5a]/20 blur-3xl"></div>
+          <div className="relative bg-[#120e2c]/80 border border-white/10 rounded-2xl p-6 backdrop-blur-sm">
+            <div className="text-sm text-gray-400 mb-2">$ psql "postgres://materialize..."</div>
+            <div className="space-y-2 font-mono text-sm">
+              <div className="text-[#6c33ff]">CREATE SOURCE</div>
+              <div className="text-gray-300 ml-4">orders FROM KAFKA</div>
+              <div className="text-gray-300 ml-4">CONNECTION kafka_conn</div>
+              <div className="text-gray-300 ml-4">TOPIC 'orders';</div>
+              <div className="mt-4 text-[#6c33ff]">CREATE MATERIALIZED VIEW</div>
+              <div className="text-gray-300 ml-4">revenue_by_region AS</div>
+              <div className="text-gray-300 ml-4">SELECT region, SUM(amount)</div>
+              <div className="text-gray-300 ml-4">FROM orders GROUP BY region;</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-Get your documentation site up and running in minutes.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Quick Start</h2>
+  <p className="text-lg text-gray-600 dark:text-gray-400 mb-8">Get up and running with Materialize in minutes</p>
+  
+  <Steps>
+    <Step title="Sign up for Materialize Cloud">
+      Create a free account at [materialize.com/register](https://materialize.com/register) or download the self-managed Community edition. Cloud accounts include 14 days of free trial credits.
+    </Step>
+    <Step title="Connect your data sources">
+      Use native CDC connectors to stream data from PostgreSQL, MySQL, or Kafka into Materialize:
+      
+      ```sql
+      CREATE SOURCE pg_source
+        FROM POSTGRES
+        CONNECTION pg_connection
+        FOR ALL TABLES;
+      ```
+    </Step>
+    <Step title="Create materialized views">
+      Define incrementally maintained views that stay fresh automatically:
+      
+      ```sql
+      CREATE MATERIALIZED VIEW order_totals AS
+        SELECT 
+          customer_id,
+          COUNT(*) as order_count,
+          SUM(total_amount) as lifetime_value
+        FROM orders
+        GROUP BY customer_id;
+      ```
+    </Step>
+    <Step title="Query your data">
+      Connect with any PostgreSQL-compatible client and query your live views:
+      
+      ```bash
+      psql "postgres://your-materialize-url"
+      
+      SELECT * FROM order_totals 
+      WHERE lifetime_value > 1000
+      ORDER BY lifetime_value DESC;
+      ```
+    </Step>
+  </Steps>
+</div>
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Explore by Topic</h2>
+  <p className="text-lg text-gray-600 dark:text-gray-400 mb-8">Deep dive into Materialize capabilities</p>
+  
+  <CardGroup cols={2}>
+    <Card title="Core Concepts" icon="lightbulb" href="/concepts/overview">
+      Understand sources, materialized views, indexes, sinks, and clusters
+    </Card>
+    <Card title="Ingest Data" icon="database" href="/ingest/overview">
+      Connect PostgreSQL, MySQL, Kafka, and webhook sources to stream data
+    </Card>
+    <Card title="Transform Data" icon="wand-magic-sparkles" href="/transform/overview">
+      Use SQL to join, aggregate, and transform streaming data in real-time
+    </Card>
+    <Card title="Serve Results" icon="rocket" href="/serve/overview">
+      Query results via PostgreSQL protocol or stream to Kafka sinks
+    </Card>
+    <Card title="SQL Reference" icon="code" href="/sql/overview">
+      Complete SQL command reference with DDL, DML, and functions
+    </Card>
+    <Card title="Operations" icon="server" href="/operations/clusters">
+      Manage clusters, indexes, monitoring, and performance tuning
+    </Card>
+    <Card title="Deploy" icon="cloud" href="/deployment/cloud/overview">
+      Deploy on Materialize Cloud or self-manage with Kubernetes
+    </Card>
+    <Card title="Integrations" icon="plug" href="/integrations/overview">
+      Work with dbt, BI tools, and PostgreSQL client libraries
+    </Card>
+  </CardGroup>
+</div>
 
-## Make it yours
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Key Features</h2>
+  <p className="text-lg text-gray-600 dark:text-gray-400 mb-8">What makes Materialize different</p>
+  
+  <div className="grid md:grid-cols-2 gap-6">
+    <div className="bg-gray-50 dark:bg-[#1a1d27] border border-gray-200 dark:border-[#27272a] rounded-2xl p-6">
+      <div className="text-[#2d1f5a] dark:text-[#958bab] mb-3">
+        <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+      </div>
+      <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Incremental Updates</h3>
+      <p className="text-gray-600 dark:text-gray-400">
+        Views update incrementally as new data arrives, processing only what changed instead of recomputing from scratch.
+      </p>
+    </div>
+    
+    <div className="bg-gray-50 dark:bg-[#1a1d27] border border-gray-200 dark:border-[#27272a] rounded-2xl p-6">
+      <div className="text-[#2d1f5a] dark:text-[#958bab] mb-3">
+        <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+        </svg>
+      </div>
+      <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Strong Consistency</h3>
+      <p className="text-gray-600 dark:text-gray-400">
+        Query results are always correct and consistent, even when joining data from multiple sources.
+      </p>
+    </div>
+    
+    <div className="bg-gray-50 dark:bg-[#1a1d27] border border-gray-200 dark:border-[#27272a] rounded-2xl p-6">
+      <div className="text-[#2d1f5a] dark:text-[#958bab] mb-3">
+        <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+        </svg>
+      </div>
+      <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Standard SQL</h3>
+      <p className="text-gray-600 dark:text-gray-400">
+        Use PostgreSQL-compatible SQL with support for complex joins, aggregations, window functions, and more.
+      </p>
+    </div>
+    
+    <div className="bg-gray-50 dark:bg-[#1a1d27] border border-gray-200 dark:border-[#27272a] rounded-2xl p-6">
+      <div className="text-[#2d1f5a] dark:text-[#958bab] mb-3">
+        <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v7a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v7a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 16a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-3zM14 16a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1h-4a1 1 0 01-1-1v-3z" />
+        </svg>
+      </div>
+      <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Horizontal Scalability</h3>
+      <p className="text-gray-600 dark:text-gray-400">
+        Scale compute independently across multiple clusters to handle growing data volumes and query workloads.
+      </p>
+    </div>
+  </div>
+</div>
 
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
-  </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
-  </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
-  </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
-
-## Create beautiful pages
-
-Everything you need to create world-class documentation.
-
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
-
-## Need inspiration?
-
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="bg-gradient-to-r from-[#2d1f5a] to-[#1a1528] dark:from-[#2d1f5a] dark:to-[#1a1528] rounded-2xl p-8 md:p-12 text-center">
+    <h2 className="text-3xl font-bold text-white mb-4">Ready to get started?</h2>
+    <p className="text-xl text-gray-300 mb-8 max-w-2xl mx-auto">
+      Start building real-time data applications with Materialize today
+    </p>
+    <div className="flex flex-col sm:flex-row gap-4 justify-center">
+      <a 
+        href="/quickstart" 
+        className="inline-flex items-center justify-center px-6 py-3 rounded-lg bg-white hover:bg-gray-100 text-[#2d1f5a] font-semibold transition-colors no-underline"
+      >
+        Get Started
+      </a>
+      <a 
+        href="https://materialize.com/s/chat" 
+        className="inline-flex items-center justify-center px-6 py-3 rounded-lg border border-white/30 bg-white/10 hover:bg-white/20 text-white font-semibold transition-colors no-underline"
+      >
+        Join Community
+      </a>
+    </div>
+  </div>
+</div>
